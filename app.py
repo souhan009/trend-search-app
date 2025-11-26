@@ -8,12 +8,20 @@ import os
 st.set_page_config(page_title="トレンド・イベント検索", page_icon="🔍")
 
 st.title("🔍 トレンド・イベント検索アプリ")
-st.markdown("指定した期間の「新メニュー」「新規オープン」「イベント」情報をAIが検索します。")
+st.markdown("指定した期間・地域の「新メニュー」「新規オープン」「イベント」情報をAIが検索します。")
 
-# --- サイドバー: 期間設定 ---
+# --- サイドバー: 設定エリア ---
 with st.sidebar:
-    st.header("設定")
-    st.markdown("### 期間指定")
+    st.header("検索条件")
+    
+    # 地域の設定 (ここを追加！)
+    st.markdown("### 📍 地域・場所")
+    region = st.text_input("検索したい場所", value="全国", help="例: 東京都、大阪市、渋谷区、吉祥寺 など")
+
+    st.markdown("---")
+    
+    # 期間の設定
+    st.markdown("### 📅 期間指定")
     today = datetime.date.today()
     next_month = today + datetime.timedelta(days=30)
     
@@ -37,12 +45,12 @@ if st.button("検索開始", type="primary"):
         client = genai.Client(api_key=api_key)
         
         status_text = st.empty()
-        status_text.info("🔍 Webから情報を収集中... (20〜30秒ほどかかります)")
+        status_text.info(f"🔍 {region}周辺の情報を収集中... (20〜30秒ほどかかります)")
 
-        # プロンプト
+        # プロンプト (地域情報を埋め込み)
         prompt = f"""
         あなたはトレンドリサーチャーです。
-        日本国内における、【{start_date}】から【{end_date}】までの期間の以下の情報を、Google検索を使って調べてください。
+        【{region}】における、【{start_date}】から【{end_date}】までの期間の以下の情報を、Google検索を使って調べてください。
 
         【調査対象】
         1. 有名チェーン店や人気飲食店の「新メニュー」「期間限定メニュー」の発売情報
@@ -50,6 +58,7 @@ if st.button("検索開始", type="primary"):
         3. 期間限定のイベント情報
 
         【条件】
+        - 検索地域は必ず【{region}】に関連する情報に絞ってください。
         - 情報源は信頼できるニュースサイトやプレスリリースなどを優先してください。
         - **厳選して5〜10件** 抽出してください。
         - 過去のイベントではなく、指定期間に含まれるものに限ります。
@@ -67,7 +76,7 @@ if st.button("検索開始", type="primary"):
 
             # 結果表示
             status_text.empty()
-            st.success("検索完了！")
+            st.success(f"検索完了！ ({region})")
             st.markdown(response.text)
 
             # 参照元リンク
