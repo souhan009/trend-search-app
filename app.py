@@ -11,7 +11,7 @@ import re
 st.set_page_config(page_title="トレンド・イベント検索", page_icon="🗺️")
 
 st.title("🗺️ トレンド・イベントMap検索")
-st.markdown("指定した期間・地域の情報をAIが検索し、地図とリストで表示します。")
+st.markdown("指定した期間・地域の情報をAIが検索し、地図とテキストで表示します。")
 
 # --- サイドバー: 設定エリア ---
 with st.sidebar:
@@ -43,9 +43,9 @@ if st.button("検索開始", type="primary"):
         # 検索処理
         client = genai.Client(api_key=api_key)
         status_text = st.empty()
-        status_text.info(f"🔍 {region}周辺の情報を収集中... 地図データも作成しています...")
+        status_text.info(f"🔍 {region}周辺の情報を収集中... 地図とリストを作成しています...")
 
-        # プロンプト
+        # プロンプト (取得項目に「type」と「place」を追加)
         prompt = f"""
         あなたはトレンドリサーチャーです。
         【{region}】における、【{start_date}】から【{end_date}】までの期間の以下の情報を、Google検索を使って調べてください。
@@ -58,13 +58,15 @@ if st.button("検索開始", type="primary"):
         【出力形式（超重要）】
         結果は**必ず以下のJSON形式のリストのみ**を出力してください。
         Markdownの装飾（```json）や前置きは不要です。
-        各アイテムには、その場所のおおよその緯度(lat)と経度(lon)を必ず含めてください。
+        各アイテムには、以下の情報を必ず含めてください。
 
         [
             {{
+                "type": "種別(新メニュー/オープン/イベント)",
                 "name": "店名またはイベント名",
-                "date": "開催日または発売日",
-                "description": "概要（50文字程度）",
+                "place": "具体的な場所・施設名",
+                "date": "開催日または発売日(YYYY-MM-DD)",
+                "description": "概要（特徴を簡潔に）",
                 "url": "関連する公式URLなど（あれば）",
                 "lat": 緯度(数値),
                 "lon": 経度(数値)
@@ -96,58 +98,61 @@ if st.button("検索開始", type="primary"):
             data = []
             
             try:
-                # そのまま変換を試みる
                 data = json.loads(text)
             except json.JSONDecodeError as e:
-                # 失敗した場合のリカバリー
+                # エラーリカバリー（前回と同じ頑丈なロジック）
                 try:
-                    # パターンA: "Extra data" (JSONの後ろにゴミがある)
                     if e.msg.startswith("Extra data"):
-                        # エラー発生位置(e.pos)までが正しいデータなので、そこで切り取る
-                        valid_json = text[:e.pos]
-                        data = json.loads(valid_json)
-                    
-                    # パターンB: 前後に余計な文字がある場合 (正規表現で [ ... ] を探す)
+                        data = json.loads(text[:e.pos])
                     else:
                         match = re.search(r'\[.*\]', text, re.DOTALL)
                         if match:
                             candidate = match.group(0)
-                            # 正規表現で取り出した後、再度 "Extra data" チェックを行う
                             try:
                                 data = json.loads(candidate)
                             except json.JSONDecodeError as e2:
                                 if e2.msg.startswith("Extra data"):
                                     data = json.loads(candidate[:e2.pos])
                                 else:
-                                    raise e2 # どうしても無理
+                                    raise e2
                         else:
-                            raise e # [ ] が見つからない
-                            
-                except Exception as final_error:
+                            raise e
+                except Exception:
                     st.error("データの読み込みに失敗しました。")
-                    with st.expander("詳細エラー"):
-                        st.write(final_error)
-                        st.text("▼ AIからの生の返答")
-                        st.code(text)
                     st.stop()
 
-            # --- ここまで来れば data には正しいリストが入っているはず ---
-            
             # データフレーム変換
             df = pd.DataFrame(data)
 
-            # 1. 地図の表示
+            # --- 1. 地図の表示 ---
             st.subheader(f"📍 {region}周辺のイベントマップ")
             if not df.empty and 'lat' in df.columns and 'lon' in df.columns:
                 map_df = df.dropna(subset=['lat', 'lon'])
                 st.map(map_df, size=20, color='#FF4B4B')
             else:
-                st.warning("地図データ（緯度・経度）が取得できませんでした。リストのみ表示します。")
+                st.warning("地図データが取得できませんでした。")
 
-            # 2. リスト詳細の表示
-            st.subheader("📝 イベント詳細リスト")
+            # --- 2. 速報リスト（昨日の形式）を追加！ ---
+            st.markdown("---")
+            st.subheader("📋 速報テキストリスト")
+            
+            for item in data:
+                # 昨日のような箇条書きスタイルで出力
+                st.markdown(f"""
+                - **種別**: {item.get('type', '情報')}
+                - **店名/イベント名**: {item.get('name')}
+                - **場所**: {item.get('place', region)}
+                - **概要**: {item.get('description')}
+                - **日付**: {item.get('date')}
+                """)
+
+            # --- 3. 詳細リスト（既存の折りたたみ） ---
+            st.markdown("---")
+            st.subheader("📝 詳細・リンク")
             for item in data:
                 with st.expander(f"{item.get('date', '')} : {item.get('name', '名称不明')}"):
+                    st.write(f"**種別**: {item.get('type', '')}")
+                    st.write(f"**場所**: {item.get('place', '')}")
                     st.write(f"**概要**: {item.get('description', '')}")
                     if item.get('url'):
                         st.markdown(f"[🔗 公式情報・関連リンク]({item.get('url')})")
