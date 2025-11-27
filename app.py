@@ -163,10 +163,9 @@ if st.button("検索開始", type="primary"):
                     pickable=True,
                 )
 
-                # ★ここを修正しました！
-                # Mapboxのキーが不要な「CartoDB」のスタイルを指定
+                # ★ここを変更しました！ (Voyagerスタイル)
                 st.pydeck_chart(pdk.Deck(
-                    map_style='https://basemaps.cartocdn.com/gl/positron-gl-style/style.json',
+                    map_style='https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json',
                     initial_view_state=view_state,
                     layers=[layer],
                     tooltip={
