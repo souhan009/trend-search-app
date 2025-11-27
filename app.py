@@ -5,6 +5,7 @@ from google.genai import types
 import os
 import json
 import pandas as pd
+import re # 追加：正規表現を使うためのライブラリ
 
 # ページの設定
 st.set_page_config(page_title="トレンド・イベント検索", page_icon="🗺️")
@@ -60,7 +61,8 @@ if st.button("検索開始", type="primary"):
         3. 期間限定のイベント情報
 
         【出力形式（超重要）】
-        結果は**必ず以下のJSON形式のリストのみ**を出力してください。Markdownの装飾（```json など）は不要です。
+        結果は**必ず以下のJSON形式のリストのみ**を出力してください。
+        Markdownの装飾や、「結果はこちらです」などの前置きは一切不要です。
         各アイテムには、その場所のおおよその緯度(lat)と経度(lon)を必ず含めてください。
 
         [
@@ -88,50 +90,4 @@ if st.button("検索開始", type="primary"):
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     tools=[types.Tool(google_search=types.GoogleSearch())],
-                    response_mime_type="application/json" # JSONモードを強制
-                )
-            )
-
-            # 結果の処理
-            status_text.empty()
-            
-            # JSONテキストをPythonのデータに変換
-            try:
-                # 念のためMarkdown記法などを削除
-                cleaned_text = response.text.replace("```json", "").replace("```", "").strip()
-                data = json.loads(cleaned_text)
-                
-                # データフレーム（表）に変換
-                df = pd.DataFrame(data)
-
-                # --- 1. 地図の表示 ---
-                st.subheader(f"📍 {region}周辺のイベントマップ")
-                if not df.empty and 'lat' in df.columns and 'lon' in df.columns:
-                    # 地図を表示（lat, lonカラムが必要）
-                    st.map(df, size=20, color='#FF4B4B')
-                else:
-                    st.warning("地図データの取得に失敗しました。")
-
-                # --- 2. リスト詳細の表示 ---
-                st.subheader("📝 イベント詳細リスト")
-                for item in data:
-                    with st.expander(f"{item.get('date', '')} : {item.get('name', '名称不明')}"):
-                        st.write(f"**概要**: {item.get('description', '')}")
-                        if item.get('url'):
-                            st.markdown(f"[🔗 公式情報・関連リンク]({item.get('url')})")
-            
-            except json.JSONDecodeError:
-                st.error("AIからのデータを地図形式に変換できませんでした。もう一度試してみてください。")
-                with st.expander("生のデータを確認"):
-                    st.text(response.text)
-
-            # 参照元リンク（Grounding）
-            with st.expander("📚 参考にしたWebページ"):
-                if response.candidates[0].grounding_metadata.grounding_chunks:
-                    for chunk in response.candidates[0].grounding_metadata.grounding_chunks:
-                        if chunk.web:
-                            st.markdown(f"- [{chunk.web.title}]({chunk.web.uri})")
-
-        except Exception as e:
-            status_text.empty()
-            st.error(f"エラーが発生しました: {e}")
+                    response_mime_type="application/json"
