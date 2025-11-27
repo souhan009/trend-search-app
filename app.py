@@ -10,12 +10,50 @@ import requests
 from bs4 import BeautifulSoup
 import time
 import urllib.parse
+import re
 
 # ページの設定
 st.set_page_config(page_title="トレンド・イベント検索", page_icon="📖", layout="wide")
 
 st.title("📖 イベント情報「一括直読」抽出アプリ")
 st.markdown("指定したWebページをAIが読み込み、情報を統合・整理してテーブル表示します。")
+
+# --- 日付正規化関数 (ゼロ埋め処理) ---
+def normalize_date(text):
+    """
+    文字列内の日付「YYYY年M月D日」を「YYYY年MM月DD日」に変換する関数
+    例: "2025年8月8日〜" -> "2025年08月08日〜"
+    """
+    if not text:
+        return text
+        
+    # 年月日のパターンを探して、月と日を0埋めする
+    # (\d{4})年(\d{1,2})月(\d{1,2})日 -> YYYY年MM月DD日
+    def replace_func(match):
+        year = match.group(1)
+        month = match.group(2).zfill(2) # 0埋め
+        day = match.group(3).zfill(2)   # 0埋め
+        return f"{year}年{month}月{day}日"
+
+    # 正規表現で置換実行
+    normalized_text = re.sub(r'(\d{4})年(\d{1,2})月(\d{1,2})日', replace_func, text)
+    
+    # 区切り文字が "/" の場合も対応 (2025/8/8 -> 2025/08/08)
+    def replace_func_slash(match):
+        year = match.group(1)
+        month = match.group(2).zfill(2)
+        day = match.group(3).zfill(2)
+        return f"{year}/{month}/{day}"
+        
+    normalized_text = re.sub(r'(\d{4})/(\d{1,2})/(\d{1,2})', replace_func_slash, normalized_text)
+    
+    return normalized_text
+
+# --- Session State ---
+if 'extracted_data' not in st.session_state:
+    st.session_state.extracted_data = None
+if 'last_update' not in st.session_state:
+    st.session_state.last_update = None
 
 # --- サイドバー: 設定エリア ---
 with st.sidebar:
@@ -45,13 +83,7 @@ with st.sidebar:
         height=100
     )
 
-    st.info("💡 「きょうから」等の表現は、具体的な日付に変換されます。")
-
-# --- Session State ---
-if 'extracted_data' not in st.session_state:
-    st.session_state.extracted_data = None
-if 'last_update' not in st.session_state:
-    st.session_state.last_update = None
+    st.info("💡 日付は自動的に「YYYY年MM月DD日」形式（ゼロ埋め）に統一され、正しくソートできます。")
 
 # --- メインエリア ---
 
@@ -62,7 +94,6 @@ if st.button("一括読み込み開始", type="primary"):
         st.error("⚠️ APIキーが設定されていません。")
         st.stop()
 
-    # ターゲットリスト作成
     targets = []
     for label in selected_presets:
         targets.append({"url": PRESET_URLS[label], "label": label})
@@ -112,7 +143,7 @@ if st.button("一括読み込み開始", type="primary"):
                 script.decompose()
             page_text = soup.get_text(separator="\n", strip=True)[:50000]
 
-            # AI解析 (プロンプトを強化)
+            # AI解析
             prompt = f"""
             あなたはデータ抽出アシスタントです。
             以下のWebページのテキストから「イベント情報」を抽出し、JSON形式でリスト化してください。
@@ -125,11 +156,11 @@ if st.button("一括読み込み開始", type="primary"):
             【テキスト内容】
             {page_text}
 
-            【抽出ルール（重要）】
+            【抽出ルール】
             1. イベント名、期間、場所、概要を抽出してください。
-            2. **日付の具体化**: テキスト内の「きょうから」「明日開催」「今週末」といった相対的な表現は禁止です。
-               - 記事内に記載されている「公開日」や「イベント期間（例: 2025.11.28〜）」を探し、必ず**「YYYY年MM月DD日〜」のような具体的な日付形式**に変換してください。
-               - どうしても日付が特定できない場合のみ、原文のままにしてください。
+            2. **日付の統一**: 記事内の日付情報を基に、必ず**「YYYY年MM月DD日」形式（月と日は2桁ゼロ埋め）** に変換してください。
+               例: 2025年8月1日 → 2025年08月01日
+               例: 8/5〜 → 2025年08月05日〜
             3. 場所の緯度経度（lat, lon）は、場所名から推測して埋めてください。
             4. `source_url` はこのページのURL({url})としてください。
 
@@ -138,7 +169,7 @@ if st.button("一括読み込み開始", type="primary"):
                 {{
                     "name": "イベント名",
                     "place": "開催場所",
-                    "date_info": "期間(具体的な日付で)",
+                    "date_info": "期間(YYYY年MM月DD日)",
                     "description": "概要(簡潔に)",
                     "lat": 緯度(数値),
                     "lon": 経度(数値)
@@ -158,6 +189,11 @@ if st.button("一括読み込み開始", type="primary"):
                 for item in extracted_list:
                     item['source_label'] = label
                     item['source_url'] = url
+                    
+                    # ★ここで日付の強制正規化を実行
+                    if item.get('date_info'):
+                        item['date_info'] = normalize_date(item['date_info'])
+                        
                     all_data.append(item)
             
             time.sleep(1)
@@ -237,6 +273,12 @@ if st.session_state.extracted_data is not None:
         'description': '概要', 'source_label': '情報源', 'source_url': 'リンクURL'
     }
     display_df = display_df.rename(columns=rename_map)
+
+    # 期間でソート（文字列だが、ゼロ埋めされているので正しくソートされる）
+    try:
+        display_df = display_df.sort_values('期間')
+    except:
+        pass
 
     st.dataframe(
         display_df,
