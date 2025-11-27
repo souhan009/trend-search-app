@@ -6,7 +6,7 @@ import os
 import json
 import pandas as pd
 import re
-import pydeck as pdk # 高機能な地図用のライブラリ
+import pydeck as pdk
 
 # ページの設定
 st.set_page_config(page_title="トレンド・イベント検索", page_icon="🗺️")
@@ -46,7 +46,7 @@ if st.button("検索開始", type="primary"):
         status_text = st.empty()
         status_text.info(f"🔍 {region}周辺の情報を収集中... 詳細な期間情報と地図データを作成中...")
 
-        # プロンプト (start_date, end_date を分離して要求)
+        # プロンプト
         prompt = f"""
         あなたはトレンドリサーチャーです。
         【{region}】における、【{start_date}】から【{end_date}】までの期間の以下の情報を、Google検索を使って調べてください。
@@ -104,7 +104,6 @@ if st.button("検索開始", type="primary"):
             try:
                 data = json.loads(text)
             except json.JSONDecodeError as e:
-                # エラーリカバリー
                 try:
                     if e.msg.startswith("Extra data"):
                         data = json.loads(text[:e.pos])
@@ -126,15 +125,14 @@ if st.button("検索開始", type="primary"):
                     st.stop()
 
             # --- 期間表示用の整形処理 ---
-            # データに「display_date」という新しい項目を追加します
             for item in data:
                 s_date = item.get('start_date')
                 e_date = item.get('end_date')
                 if s_date and e_date:
                     if s_date == e_date:
-                        item['display_date'] = s_date # 単発
+                        item['display_date'] = s_date
                     else:
-                        item['display_date'] = f"{s_date} 〜 {e_date}" # 期間
+                        item['display_date'] = f"{s_date} 〜 {e_date}"
                 else:
                     item['display_date'] = s_date or "日付不明"
 
@@ -147,7 +145,7 @@ if st.button("検索開始", type="primary"):
             if not df.empty and 'lat' in df.columns and 'lon' in df.columns:
                 map_df = df.dropna(subset=['lat', 'lon'])
                 
-                # 地図の設定
+                # ビューの設定
                 view_state = pdk.ViewState(
                     latitude=map_df['lat'].mean(),
                     longitude=map_df['lon'].mean(),
@@ -155,19 +153,20 @@ if st.button("検索開始", type="primary"):
                     pitch=0,
                 )
 
-                # レイヤーの設定（赤い点＋ツールチップ）
+                # レイヤーの設定
                 layer = pdk.Layer(
                     "ScatterplotLayer",
                     map_df,
                     get_position='[lon, lat]',
-                    get_color='[255, 75, 75, 160]', # 赤色, 透明度あり
-                    get_radius=200, # 半径(メートル)
-                    pickable=True,  # マウスオーバーを有効にする
+                    get_color='[255, 75, 75, 160]',
+                    get_radius=200,
+                    pickable=True,
                 )
 
-                # 地図のレンダリング
+                # ★ここを修正しました！
+                # Mapboxのキーが不要な「CartoDB」のスタイルを指定
                 st.pydeck_chart(pdk.Deck(
-                    map_style='mapbox://styles/mapbox/light-v9', # 明るい地図
+                    map_style='https://basemaps.cartocdn.com/gl/positron-gl-style/style.json',
                     initial_view_state=view_state,
                     layers=[layer],
                     tooltip={
@@ -179,7 +178,7 @@ if st.button("検索開始", type="primary"):
             else:
                 st.warning("地図データが取得できませんでした。")
 
-            # --- 2. 速報テキストリスト（期間表示に対応） ---
+            # --- 2. 速報テキストリスト ---
             st.markdown("---")
             st.subheader("📋 速報テキストリスト")
             
