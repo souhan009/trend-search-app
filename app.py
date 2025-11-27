@@ -172,15 +172,17 @@ if st.button("検索開始", type="primary"):
                 ))
                 st.caption("※地図上の赤い丸にマウスを乗せると詳細が表示されます。")
                 
-                # Googleマイマップ用CSV作成
+                # ★ここを修正しました！ ご希望のCSV形式に変更
                 export_data = []
                 for _, row in map_df.iterrows():
-                    desc = f"【期間】{row.get('display_date')}\n【場所】{row.get('place')}\n{row.get('description')}\n{row.get('url', '')}"
+                    # 概要欄には期間と説明文をまとめる
+                    gaiyou = f"【期間】{row.get('display_date')}\n{row.get('description')}"
+                    
                     export_data.append({
                         "Name": row.get('name'),
-                        "Description": desc,
-                        "Latitude": row.get('lat'),
-                        "Longitude": row.get('lon')
+                        "住所": row.get('place'),
+                        "概要": gaiyou,
+                        "公式サイト": row.get('url', '')
                     })
                 
                 export_df = pd.DataFrame(export_data)
@@ -191,18 +193,17 @@ if st.button("検索開始", type="primary"):
                     data=csv,
                     file_name=f"event_map_{region}.csv",
                     mime='text/csv',
-                    help="このファイルをGoogleマイマップにインポートすると、スマホのGoogleマップで場所を確認できます。"
+                    help="このファイルをGoogleマイマップにインポートし、「住所」列を目印の場所に指定してください。"
                 )
 
             else:
                 st.warning("地図データが取得できませんでした。")
 
-            # --- 2. 速報テキストリスト（詳細統合版） ---
+            # --- 2. 速報テキストリスト ---
             st.markdown("---")
             st.subheader("📋 イベント情報一覧")
             
             for item in data:
-                # リンクがある場合はリンクテキストを作成
                 url_text = "なし"
                 if item.get('url'):
                     url_text = f"[🔗 公式サイト・関連情報]({item.get('url')})"
@@ -216,8 +217,6 @@ if st.button("検索開始", type="primary"):
                 - **リンク**: {url_text}
                 """)
             
-            # 詳細リスト（st.expander）の部分は削除しました
-
             # 参照元リンク
             with st.expander("📚 参考にしたWebページ（AIの検索ソース）"):
                 if response.candidates[0].grounding_metadata.grounding_chunks:
