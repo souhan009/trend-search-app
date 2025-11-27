@@ -12,7 +12,7 @@ import pydeck as pdk
 st.set_page_config(page_title="トレンド・イベント検索", page_icon="🗺️")
 
 st.title("🗺️ トレンド・イベントMap検索")
-st.markdown("大手イベント情報サイト（Enjoy Tokyo, Walkerplus等）の検索結果から、確実なイベント情報を抽出します。")
+st.markdown("Web全体から「現在開催中」および「今後開催予定」のイベント・新店情報を広範囲に収集します。")
 
 # --- サイドバー: 設定エリア ---
 with st.sidebar:
@@ -20,7 +20,7 @@ with st.sidebar:
     st.markdown("### 📍 地域・場所")
     region = st.text_input("検索したい場所", value="東京都渋谷区", help="具体的な地名を入力してください。")
     
-    st.info("💡 「Enjoy Tokyo」などのまとめサイトを対象に検索します。")
+    st.info("💡 期間指定を撤廃しました。現在進行系〜未来の情報を可能な限り多く表示します。")
 
 # --- メインエリア ---
 
@@ -34,43 +34,41 @@ if st.button("検索開始", type="primary"):
     # 検索処理
     client = genai.Client(api_key=api_key)
     status_text = st.empty()
-    status_text.info(f"🔍 {region}のイベント情報を、大手まとめサイトから収集中...")
+    status_text.info(f"🔍 {region}の情報をWeb全体から収集中... (目標: 10〜20件)")
 
     # 今日の日付
     today = datetime.date.today()
-    target_month = f"{today.year}年{today.month}月"
     
-    # ★ここが変更点: 検索対象を「まとめサイト」に限定
-    summary_sites = "site:enjoytokyo.jp OR site:walkerplus.com OR site:rurubu.jp OR site:timeout.jp OR site:jorudan.co.jp"
-
-    # プロンプト (まとめサイトのリストを読み取る指示)
+    # プロンプト (制限を緩めて大量に取らせる)
     prompt = f"""
-    あなたは「Web上のイベントリストを構造化データに変換するロボット」です。
-    以下の検索クエリでGoogle検索を行い、検索結果（スニペット）に表示されている**イベント情報のリスト**をJSON形式で抽出してください。
-
+    あなたは「Web検索ロボット」です。
+    以下の検索クエリでGoogle検索を行い、**現在開催中**または**今後開催/オープン予定**のイベント情報を抽出してください。
+    
     【検索クエリ】
-    「{region} イベント {target_month} {summary_sites}」
-    「{region} 今週末 イベント {summary_sites}」
+    「{region} イベント 開催中」
+    「{region} イベント 開催予定」
+    「{region} 新規オープン 予定」
+    「{region} 限定メニュー」
 
     【基準日】
-    本日は {today} です。すでに終了したイベントは除外してください。
+    本日は {today} です。これより過去に終了したものは除外してください。
 
-    【抽出ルール】
-    1. **検索結果に出てきた「Enjoy Tokyo」や「Walkerplus」などのまとめサイトに掲載されている具体的なイベント名を抽出してください。**
-    2. 架空のイベントは絶対に創作しないでください。検索結果にあるものだけを出力してください。
-    3. URLは、そのイベントが掲載されている「まとめ記事のURL」または「イベント詳細URL」を使用してください。
+    【抽出ルール（重要）】
+    1. **件数優先**: 可能な限り多く（最大20件程度）抽出してください。
+    2. **URLの捏造禁止**: `kanko.walkerplus.com` のような存在しないURLを創作しないでください。検索結果にある**正しい記事URL**をそのまま使用してください。わからない場合は、無理にURLを貼らず `null` にしてください。
+    3. **実在確認**: 「unknown」や「情報なし」といった無意味なデータは含めないでください。
 
     【出力形式（JSONのみ）】
     [
         {{
             "name": "イベント名",
-            "place": "開催場所(施設名など)",
-            "date_info": "開催期間のテキスト(例: 11/27〜12/25)",
+            "place": "開催場所",
+            "date_info": "開催期間(例: 開催中〜12/25)",
             "description": "概要",
-            "source_name": "掲載サイト名(例: Enjoy Tokyo)",
+            "source_name": "サイト名",
             "url": "記事のURL",
-            "lat": 緯度(数値・不明なら地域の中心),
-            "lon": 経度(数値・不明なら地域の中心)
+            "lat": 緯度(数値),
+            "lon": 経度(数値)
         }}
     ]
     """
@@ -83,7 +81,7 @@ if st.button("検索開始", type="primary"):
             config=types.GenerateContentConfig(
                 tools=[types.Tool(google_search=types.GoogleSearch())],
                 response_mime_type="application/json",
-                temperature=0.0 # 創造性ゼロ
+                temperature=0.0
             )
         )
 
@@ -107,15 +105,28 @@ if st.button("検索開始", type="primary"):
             except:
                 pass
         
-        # データクリーニング
+        # クリーニング（名前がない、URLが壊れている、などを弾く）
         cleaned_data = []
         for item in data:
-            if item.get('name') and item.get('name') not in ['unknown', 'イベント情報']:
-                cleaned_data.append(item)
+            name = item.get('name', '')
+            url = item.get('url', '')
+            
+            # 名前チェック
+            if not name or name.lower() in ['unknown', 'イベント', 'なし']:
+                continue
+            
+            # URLチェック (httpから始まっていない、または変なドメインを弾く簡易フィルタ)
+            if not url or not url.startswith('http'):
+                continue
+            if 'kanko.walkerplus' in url: # 例の幻覚ドメインを物理削除
+                continue
+                
+            cleaned_data.append(item)
+            
         data = cleaned_data
 
         if not data:
-            st.warning(f"⚠️ 情報が見つかりませんでした。")
+            st.warning(f"⚠️ 情報が見つかりませんでした。エリアを変えて試してみてください。")
             st.stop()
 
         # データフレーム変換
@@ -123,9 +134,9 @@ if st.button("検索開始", type="primary"):
 
         # --- 1. 高機能地図 (Voyager) ---
         st.subheader(f"📍 {region}周辺のイベントマップ")
+        st.caption(f"取得件数: {len(data)}件")
         
         if not df.empty and 'lat' in df.columns and 'lon' in df.columns:
-            # 緯度経度が0やnullのものを除く
             map_df = df.dropna(subset=['lat', 'lon'])
             
             if not map_df.empty:
