@@ -90,4 +90,61 @@ if st.button("検索開始", type="primary"):
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     tools=[types.Tool(google_search=types.GoogleSearch())],
-                    response_mime_type="application/json"
+                    response_mime_type="application/json" # JSONモードを強制
+                )
+            )
+
+            # 結果の処理
+            status_text.empty()
+            
+            # ★ここを修正：頑丈なJSON抽出ロジック
+            try:
+                text = response.text
+                # 文字列の中から [ ... ] の部分だけを探し出す
+                match = re.search(r'\[.*\]', text, re.DOTALL)
+                
+                if match:
+                    json_str = match.group(0)
+                    data = json.loads(json_str)
+                else:
+                    # 見つからない場合はそのままトライ
+                    data = json.loads(text)
+                
+                # データフレーム（表）に変換
+                df = pd.DataFrame(data)
+
+                # --- 1. 地図の表示 ---
+                st.subheader(f"📍 {region}周辺のイベントマップ")
+                
+                # 緯度経度データがあるかチェックして地図表示
+                if not df.empty and 'lat' in df.columns and 'lon' in df.columns:
+                    # 欠損値を除去して地図表示
+                    map_df = df.dropna(subset=['lat', 'lon'])
+                    st.map(map_df, size=20, color='#FF4B4B')
+                else:
+                    st.warning("地図データ（緯度・経度）が取得できませんでした。リストのみ表示します。")
+
+                # --- 2. リスト詳細の表示 ---
+                st.subheader("📝 イベント詳細リスト")
+                for item in data:
+                    with st.expander(f"{item.get('date', '')} : {item.get('name', '名称不明')}"):
+                        st.write(f"**概要**: {item.get('description', '')}")
+                        if item.get('url'):
+                            st.markdown(f"[🔗 公式情報・関連リンク]({item.get('url')})")
+            
+            except Exception as parse_error:
+                st.error("AIからのデータの読み込みに失敗しました。")
+                st.write("▼ 原因調査用データ（AIの出力）")
+                st.code(response.text) # どんなデータが返ってきたか表示する
+                st.error(f"エラー詳細: {parse_error}")
+
+            # 参照元リンク（Grounding）
+            with st.expander("📚 参考にしたWebページ"):
+                if response.candidates[0].grounding_metadata.grounding_chunks:
+                    for chunk in response.candidates[0].grounding_metadata.grounding_chunks:
+                        if chunk.web:
+                            st.markdown(f"- [{chunk.web.title}]({chunk.web.uri})")
+
+        except Exception as e:
+            status_text.empty()
+            st.error(f"エラーが発生しました: {e}")
