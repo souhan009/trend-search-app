@@ -12,16 +12,21 @@ import time
 import urllib.parse
 
 # ページの設定
-st.set_page_config(page_title="トレンド・イベント検索", page_icon="📖", layout="wide") # 横幅を広く使う設定
+st.set_page_config(page_title="トレンド・イベント検索", page_icon="📖", layout="wide")
 
 st.title("📖 イベント情報「一括直読」抽出アプリ")
 st.markdown("指定したWebページをAIが読み込み、情報を統合・整理してテーブル表示します。")
+
+# --- Session Stateの初期化 (データを保持するための箱を作る) ---
+if 'extracted_data' not in st.session_state:
+    st.session_state.extracted_data = None
+if 'last_update' not in st.session_state:
+    st.session_state.last_update = None
 
 # --- サイドバー: 設定エリア ---
 with st.sidebar:
     st.header("読み込み対象 (複数選択可)")
     
-    # プリセットURLリスト
     PRESET_URLS = {
         "Walkerplus (今日のイベント/東京)": "https://www.walkerplus.com/event_list/today/ar0300/",
         "Walkerplus (今週末のイベント/東京)": "https://www.walkerplus.com/event_list/weekend/ar0300/",
@@ -48,7 +53,7 @@ with st.sidebar:
 
     st.info("💡 重複するイベントは自動的に統合されます。")
 
-# --- メインエリア ---
+# --- メインエリア: 読み込みボタン処理 ---
 
 if st.button("一括読み込み開始", type="primary"):
     try:
@@ -164,36 +169,38 @@ if st.button("一括読み込み開始", type="primary"):
 
     if not all_data:
         st.error("情報が見つかりませんでした。")
-        st.stop()
-
-    # --- 重複削除ロジック ---
-    # イベント名と場所を正規化してキーにし、既にあったら追加しない
-    unique_data = []
-    seen_keys = set()
-
-    for item in all_data:
-        # 空白削除・小文字化して比較用キーを作成
-        name_key = str(item.get('name', '')).replace(" ", "").replace("　", "").lower()
-        place_key = str(item.get('place', '')).replace(" ", "").replace("　", "").lower()
+        # データがない場合、セッションステートもクリア
+        st.session_state.extracted_data = None
+    else:
+        # --- ここでデータをセッションステートに保存！ ---
+        # 重複削除ロジック
+        unique_data = []
+        seen_keys = set()
+        for item in all_data:
+            name_key = str(item.get('name', '')).replace(" ", "").replace("　", "").lower()
+            place_key = str(item.get('place', '')).replace(" ", "").replace("　", "").lower()
+            if not name_key: continue
+            unique_key = (name_key, place_key)
+            if unique_key not in seen_keys:
+                seen_keys.add(unique_key)
+                unique_data.append(item)
         
-        # キーが空ならスキップ
-        if not name_key:
-            continue
+        # 保存
+        st.session_state.extracted_data = unique_data
+        st.session_state.last_update = datetime.datetime.now().strftime("%H:%M:%S")
+        
+        status_text.success(f"🎉 読み込み完了！ ({st.session_state.last_update})")
 
-        # ユニークキー: (イベント名, 場所名)
-        # ※場所が変われば同名イベントでも別物とみなす
-        unique_key = (name_key, place_key)
 
-        if unique_key not in seen_keys:
-            seen_keys.add(unique_key)
-            unique_data.append(item)
-    
-    status_text.success(f"🎉 完了！ {len(all_data)}件中 {len(all_data) - len(unique_data)}件の重複を削除し、{len(unique_data)}件を表示します。")
+# --- 結果表示エリア (セッションステートにデータがあれば表示) ---
 
-    # データフレーム作成
-    df = pd.DataFrame(unique_data)
+if st.session_state.extracted_data is not None:
+    data = st.session_state.extracted_data
+    df = pd.DataFrame(data)
 
-    # --- 1. マップ表示 ---
+    st.markdown(f"**最終更新: {st.session_state.last_update}** ({len(data)}件)")
+
+    # 1. マップ表示
     st.subheader("📍 イベントマップ")
     if not df.empty and 'lat' in df.columns and 'lon' in df.columns:
         map_df = df.dropna(subset=['lat', 'lon'])
@@ -219,35 +226,33 @@ if st.button("一括読み込み開始", type="primary"):
                 tooltip={"html": "<b>{name}</b><br/>{place}<br/><i>{date_info}</i>"}
             ))
 
-    # --- 2. テーブル表示 (スプレッドシート風) ---
+    # 2. テーブル表示
     st.markdown("---")
     st.subheader("📋 イベント一覧 (テーブル形式)")
 
-    # 表示用にカラムを整理
     display_cols = ['date_info', 'name', 'place', 'description', 'source_label', 'source_url']
-    display_df = df[display_cols].copy()
+    # データフレームに存在しないカラムがないかチェックしてから選択
+    available_cols = [c for c in display_cols if c in df.columns]
+    display_df = df[available_cols].copy()
     
-    # カラム名を日本語に変更
-    display_df.columns = ['期間', 'イベント名', '場所', '概要', '情報源', 'リンクURL']
+    # カラム名変更
+    rename_map = {
+        'date_info': '期間', 'name': 'イベント名', 'place': '場所', 
+        'description': '概要', 'source_label': '情報源', 'source_url': 'リンクURL'
+    }
+    display_df = display_df.rename(columns=rename_map)
 
-    # インタラクティブなテーブルを表示
     st.dataframe(
         display_df,
-        use_container_width=True, # 横幅いっぱいに広げる
+        use_container_width=True,
         column_config={
-            "リンクURL": st.column_config.LinkColumn(
-                "元記事へ", # 表示テキスト
-                display_text="🔗 リンクを開く" # セル内の表示
-            ),
-            "概要": st.column_config.TextColumn(
-                "概要",
-                width="large" # 概要欄を広めに
-            )
+            "リンクURL": st.column_config.LinkColumn("元記事", display_text="🔗 リンクを開く"),
+            "概要": st.column_config.TextColumn("概要", width="large")
         },
-        hide_index=True # 行番号を隠す
+        hide_index=True
     )
 
-    # CSVダウンロード
+    # 3. CSVダウンロード (ここを押しても画面は消えません！)
     csv = display_df.to_csv(index=False).encode('utf-8_sig')
     st.download_button(
         label="📥 CSVをダウンロード",
