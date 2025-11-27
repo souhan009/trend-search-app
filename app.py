@@ -21,6 +21,7 @@ with st.sidebar:
     st.header("読み込み対象")
     
     # プリセットURL（東京・渋谷周辺のイベント一覧）
+    # ※Walkerplusなどの一覧ページを指定
     PRESET_URLS = {
         "Walkerplus (今日のイベント/東京)": "https://www.walkerplus.com/event_list/today/ar0300/",
         "Walkerplus (今週末のイベント/東京)": "https://www.walkerplus.com/event_list/weekend/ar0300/",
@@ -39,7 +40,7 @@ with st.sidebar:
         target_url = PRESET_URLS[selected_preset]
         st.caption(f"URL: {target_url}")
 
-    st.info("💡 検索ではなく、このページの文章をそのままAIに読ませます。")
+    st.info("💡 検索ではなく、このページの文章をそのままAIに読ませてリスト化します。")
 
 # --- メインエリア ---
 
@@ -78,15 +79,15 @@ if st.button("読み込み開始", type="primary"):
         soup = BeautifulSoup(response.text, "html.parser")
         
         # 不要なタグ（スクリプトやスタイル）を削除
-        for script in soup(["script", "style", "nav", "footer"]):
+        for script in soup(["script", "style", "nav", "footer", "iframe"]):
             script.decompose()
             
         # 本文テキストを取得 (余計な空白削除)
         page_text = soup.get_text(separator="\n", strip=True)
         
         # テキストが長すぎる場合はカット（Geminiの入力制限対策・コスト削減）
-        # イベントリストは通常ページの上部〜中部に集まっているので、先頭30,000文字あれば十分
-        page_text = page_text[:30000]
+        # Gemini 2.0はコンテキストウィンドウが広いですが、念のため先頭5万文字に制限
+        page_text = page_text[:50000]
 
     except Exception as e:
         st.error(f"ページの読み込みエラー: {e}")
@@ -109,8 +110,8 @@ if st.button("読み込み開始", type="primary"):
     【抽出ルール】
     1. テキスト内に書かれているイベント名、開催期間、場所、概要を抜き出してください。
     2. **テキストに書かれていない情報は絶対に創作しないでください。**
-    3. URLについては、このページ自体のURL（{target_url}）を「ソース」として扱います。もしテキスト内に個別の詳細URLへのリンクパスがあれば、それを補完しても構いません。
-    4. 場所の緯度経度（lat, lon）は、場所名からあなたが推測して埋めてください。
+    3. URLについては、このページ自体のURL（{target_url}）を「ソース」として扱います。
+    4. 場所の緯度経度（lat, lon）は、場所名からあなたが推測して埋めてください（地図表示用）。
 
     【出力形式（JSONのみ）】
     [
@@ -119,7 +120,6 @@ if st.button("読み込み開始", type="primary"):
             "place": "開催場所",
             "date_info": "期間(テキスト通りに)",
             "description": "概要(簡潔に)",
-            "url": "関連URL(あれば)",
             "lat": 緯度(数値),
             "lon": 経度(数値)
         }}
@@ -127,9 +127,9 @@ if st.button("読み込み開始", type="primary"):
     """
 
     try:
-        # テキスト解析なので 1.5-flash で十分高速かつ正確
+        # ★ここを変更: 確実に動く gemini-2.0-flash-exp を使用
         response = client.models.generate_content(
-            model="gemini-1.5-flash",
+            model="gemini-2.0-flash-exp",
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -150,7 +150,7 @@ if st.button("読み込み開始", type="primary"):
         progress_bar.empty()
 
         if not data:
-            st.warning("ページからイベント情報を抽出できませんでした。")
+            st.warning("ページからイベント情報を抽出できませんでした。リスト形式のページではない可能性があります。")
             st.stop()
         else:
             status_text.success(f"{len(data)}件のイベントを抽出しました！")
@@ -182,14 +182,20 @@ if st.button("読み込み開始", type="primary"):
                     map_style='https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json',
                     initial_view_state=view_state,
                     layers=[layer],
-                    tooltip={"html": "<b>{name}</b><br/>{place}"}
+                    tooltip={
+                        "html": "<b>{name}</b><br/>{place}",
+                        "style": {"backgroundColor": "steelblue", "color": "white"}
+                    }
                 ))
         
         # --- 2. リスト表示 ---
         st.markdown("---")
         st.subheader("📋 抽出されたイベントリスト")
+        st.caption(f"データソース: {target_url}")
         
         # CSVダウンロード用
+        # CSVにはソースURL列を追加
+        df['source_url'] = target_url
         csv = df.to_csv(index=False).encode('utf-8_sig')
         st.download_button(
             label="📥 CSVをダウンロード",
@@ -199,17 +205,12 @@ if st.button("読み込み開始", type="primary"):
         )
 
         for item in data:
-            # URLが相対パスなどの場合、元のURLを表示
-            link = item.get('url')
-            if not link or not link.startswith("http"):
-                link = target_url # 元ページへ誘導
-
             st.markdown(f"""
             - **期間**: {item.get('date_info')}
             - **イベント名**: {item.get('name')}
             - **場所**: {item.get('place')}
             - **概要**: {item.get('description')}
-            - [🔗 情報元ページへ]({link})
+            - [🔗 情報元ページへ]({target_url})
             """)
 
     except Exception as e:
