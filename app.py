@@ -14,7 +14,7 @@ import time
 st.set_page_config(page_title="トレンド・イベント検索", page_icon="🗺️")
 
 st.title("🗺️ トレンド・イベントMap検索")
-st.markdown("高性能AIモデル(Pro版)を使用し、Web上の記事を時間をかけて精査します。")
+st.markdown("信頼できる情報サイト（Walkerplus, Go Tokyo等）の記事を検索し、イベント情報を抽出します。")
 
 # --- サイドバー: 設定エリア ---
 with st.sidebar:
@@ -41,7 +41,7 @@ with st.sidebar:
         default=["Fashion Press (ニュース)", "Walkerplus (イベント記事)", "Let's Enjoy Tokyo (イベント)"]
     )
     
-    st.info("💡 精度重視の「Proモデル」を使用するため、検索には30秒〜1分程度かかります。")
+    st.info("💡 最新のGemini 2.0モデルを使用します。")
 
 # --- メインエリア ---
 
@@ -60,7 +60,6 @@ if st.button("検索開始", type="primary"):
     progress_bar = st.progress(0)
     status_text = st.empty()
 
-    # STEP 1: 準備
     status_text.info("🚀 検索エンジンを起動中...")
     time.sleep(1)
     progress_bar.progress(10)
@@ -72,10 +71,10 @@ if st.button("検索開始", type="primary"):
     site_query = " OR ".join([f"site:{path}" for path in target_paths])
     today = datetime.date.today()
 
-    # プロンプト (Proモデル向け)
+    # プロンプト
     prompt = f"""
-    あなたは「高精度なファクトチェック・ロボット」です。
-    Google検索を行い、以下の条件に合致するイベント情報を慎重に抽出してください。
+    あなたは「イベント情報の収集ロボット」です。
+    Google検索を行い、以下の条件に合致する**個別のイベント記事**から情報を抽出してください。
 
     【検索クエリ】
     「{region} イベント 開催中 {site_query}」
@@ -84,9 +83,10 @@ if st.button("検索開始", type="primary"):
     【基準日】
     本日は {today} です。終了済みのイベントは除外してください。
 
-    【最重要ルール：URLの実在確認】
-    1. **URLの推測・創作は厳禁です。** 2. **検索結果に表示されている「リンクそのもの」** をコピーして使用してください。
-    3. 記事の個別URLが不明な場合は `null` にしてください。
+    【厳守ルール】
+    1. **実在する記事のみ**: 検索結果に出てきた記事（Webページ）を1件のイベントとして扱ってください。
+    2. **URL**: 検索結果の**記事URL**をそのまま使用してください。自分でURLを作ったり、トップページを入れたりしないでください。
+    3. **件数**: 検索結果から可能な限り多く（最大20件）抽出してください。
 
     【出力形式（JSONのみ）】
     [
@@ -103,42 +103,48 @@ if st.button("検索開始", type="primary"):
     ]
     """
 
-    # STEP 2: 検索実行
-    status_text.info(f"🔍 {region}周辺の情報を検索中... (Proモデルで詳細に解析します)")
-    progress_bar.progress(30)
+    # ★再試行ロジック付きの検索関数
+    def execute_search_with_retry(model_name):
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                return client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        tools=[types.Tool(google_search=types.GoogleSearch())],
+                        response_mime_type="application/json",
+                        temperature=0.0
+                    )
+                )
+            except Exception as e:
+                # 429エラー（Resource Exhausted）なら待って再試行
+                if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                    wait_time = 5 * (attempt + 1) # 5秒, 10秒, 15秒と待つ
+                    status_text.warning(f"⚠️ アクセス集中... {wait_time}秒待機して再試行します({attempt+1}/{max_retries})")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    # その他のエラーはそのまま投げる
+                    raise e
+        raise Exception("通信が混雑しており接続できませんでした。時間を置いて再度お試しください。")
 
-    # 検索実行関数
-    def execute_search(model_name):
-        return client.models.generate_content(
-            model=model_name,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-                response_mime_type="application/json",
-                temperature=0.0
-            )
-        )
+    # STEP 2: 検索実行
+    status_text.info(f"🔍 {region}周辺の情報を検索中... (Gemini 2.0 Flash)")
+    progress_bar.progress(30)
 
     response = None
     
-    # ★修正箇所：モデル名を標準的なものに変更
     try:
-        # 1. まずは「Pro」を試す（最も賢い）
-        response = execute_search("gemini-1.5-pro")
+        # ★ここで gemini-2.0-flash-exp を使用
+        response = execute_search_with_retry("gemini-2.0-flash-exp")
     except Exception as e:
-        status_text.warning("⚠️ Proモデルの応答が遅いため、高速モデル(Flash)に切り替えます...")
-        try:
-            # 2. ダメなら「Flash」を試す（制限にかかりにくい）
-            time.sleep(2)
-            response = execute_search("gemini-1.5-flash")
-        except Exception as e2:
-            st.error(f"エラーが発生しました: {e2}")
-            st.stop()
+        st.error(f"エラーが発生しました: {e}")
+        st.stop()
 
     # STEP 3: データの解析
     status_text.info("📝 取得した記事データの整合性とURLをチェック中...")
     progress_bar.progress(80)
-    time.sleep(1)
 
     # --- JSONデータの抽出 ---
     text = response.text.replace("```json", "").replace("```", "").strip()
@@ -170,7 +176,6 @@ if st.button("検索開始", type="primary"):
         is_valid = False
         if url and url.startswith("http"):
             for path in target_paths:
-                # パスのドメイン部分だけで簡易チェック
                 check_domain = path.split('/')[0] 
                 if check_domain in url:
                     is_valid = True
