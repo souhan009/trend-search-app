@@ -8,13 +8,13 @@ import pandas as pd
 import re
 import pydeck as pdk
 import urllib.parse
-import time # 待機用
+import time
 
 # ページの設定
 st.set_page_config(page_title="トレンド・イベント検索", page_icon="🗺️")
 
 st.title("🗺️ トレンド・イベントMap検索")
-st.markdown("指定した「イベントまとめサイト」のリストから、情報を一括抽出します。")
+st.markdown("信頼できる情報サイト（Walkerplus, Go Tokyo等）の記事を検索し、イベント情報を抽出します。")
 
 # --- サイドバー: 設定エリア ---
 with st.sidebar:
@@ -23,25 +23,27 @@ with st.sidebar:
     region = st.text_input("検索したい場所", value="東京都渋谷区", help="具体的な地名を入力してください。")
     
     st.markdown("---")
-    st.markdown("### 🔗 検索対象ページ指定")
+    st.markdown("### 🌐 検索対象サイト")
     
-    # 検索対象ページ
-    SPECIFIC_PAGES = {
-        "Let's Enjoy Tokyo (関東エリア一覧)": "https://www.enjoytokyo.jp/event/list/regn01/",
-        "GO TOKYO (東京公式・イベントカレンダー)": "https://www.gotokyo.org/jp/event-calendar/",
-        "Walkerplus (東京イベント一覧)": "https://www.walkerplus.com/event_list/ar0313/",
-        "Fashion Press (ニュース一覧)": "https://www.fashion-press.net/news/",
-        "TimeOut Tokyo (東京のイベント)": "https://www.timeout.jp/tokyo/ja/things-to-do/",
-        "Jorudan (イベント情報)": "https://www.jorudan.co.jp/sp/event/"
+    # ★ここを修正: 具体的なURLパスではなく「ドメイン」を指定する
+    # これにより、サイト内の全記事から検索できるようになり、ヒット数が劇的に増えます
+    SITE_DOMAINS = {
+        "Walkerplus": "walkerplus.com",
+        "GO TOKYO": "gotokyo.org",
+        "Let's Enjoy Tokyo": "enjoytokyo.jp",
+        "Fashion Press": "fashion-press.net",
+        "TimeOut Tokyo": "timeout.jp",
+        "Jorudan": "jorudan.co.jp",
+        "PR TIMES": "prtimes.jp"
     }
     
-    selected_pages = st.multiselect(
-        "検索範囲とするページ（複数可）",
-        options=list(SPECIFIC_PAGES.keys()),
-        default=["Let's Enjoy Tokyo (関東エリア一覧)", "GO TOKYO (東京公式・イベントカレンダー)"]
+    selected_sites = st.multiselect(
+        "情報を取得するサイト（複数可）",
+        options=list(SITE_DOMAINS.keys()),
+        default=["Walkerplus", "Let's Enjoy Tokyo", "Fashion Press"]
     )
     
-    st.info("💡 指定されたURL階層の下にある情報のみを検索します。")
+    st.info("💡 選択したサイト内を検索し、個別のイベント記事を探します。")
 
 # --- メインエリア ---
 
@@ -52,36 +54,41 @@ if st.button("検索開始", type="primary"):
         st.error("⚠️ APIキーが設定されていません。")
         st.stop()
 
-    if not selected_pages:
-        st.error("⚠️ 検索対象ページを少なくとも1つ選択してください。")
+    if not selected_sites:
+        st.error("⚠️ 検索対象サイトを少なくとも1つ選択してください。")
         st.stop()
 
     # 検索処理
     client = genai.Client(api_key=api_key)
     status_text = st.empty()
-    status_text.info(f"🔍 {region}の情報を、指定されたページ内から厳密に検索中...")
+    status_text.info(f"🔍 {region}の情報を、指定サイト内から収集中... (目標: 10件以上)")
 
-    target_urls = [SPECIFIC_PAGES[name] for name in selected_pages]
-    site_query = " OR ".join([f"site:{url}" for url in target_urls])
+    # 選択されたドメインをリスト化
+    target_domains = [SITE_DOMAINS[name] for name in selected_sites]
+    
+    # 検索クエリ作成 (site:walkerplus.com OR site:enjoytokyo.jp ...)
+    # これにより「指定サイトの記事」だけがヒットするようになります
+    site_query = " OR ".join([f"site:{d}" for d in target_domains])
     
     today = datetime.date.today()
     
     # プロンプト
     prompt = f"""
-    あなたは「指定されたWebページからイベントリストを読み取るロボット」です。
-    以下の検索クエリを使い、**指定されたURLパスの配下にあるページ**から、イベント情報を抽出してください。
+    あなたは「イベント情報の収集ロボット」です。
+    以下の検索クエリを使い、Google検索結果に表示される**個別のイベント記事**から情報を抽出してください。
 
     【検索クエリ】
     「{region} イベント 開催中 {site_query}」
     「{region} 新規オープン {site_query}」
+    「{region} 期間限定 {site_query}」
 
     【基準日】
-    本日は {today} です。過去のイベントは除外してください。
+    本日は {today} です。過去に終了したイベントは除外してください。
 
     【厳守ルール】
-    1. **指定されたサイト以外からの情報は絶対に拾わないでください。**
-    2. **捏造禁止**: 検索結果のスニペットに書かれているイベント名と日付のみを使用してください。
-    3. **URL**: 記事の個別URLがあればそれを、なければ「検索結果のURL（一覧ページのURL）」を使用してください。架空のURLは禁止です。
+    1. **実在する記事のみ**: 検索結果に出てきた記事（Webページ）を1件のイベントとして扱ってください。
+    2. **URL**: 検索結果の**記事URL**をそのまま使用してください。自分でURLを作ったり、トップページ (`walkerplus.com` のみ等) を入れたりしないでください。
+    3. **件数**: 検索結果から可能な限り多く（最大20件）抽出してください。
 
     【出力形式（JSONのみ）】
     [
@@ -91,7 +98,7 @@ if st.button("検索開始", type="primary"):
             "date_info": "期間(例: 開催中〜12/25)",
             "description": "概要(短くてOK)",
             "source_name": "サイト名",
-            "url": "URL",
+            "url": "記事のURL",
             "lat": 緯度(数値・不明ならnull),
             "lon": 経度(数値・不明ならnull)
         }}
@@ -116,24 +123,15 @@ if st.button("検索開始", type="primary"):
     try:
         response = execute_search("gemini-1.5-flash-002")
     except Exception as e:
-        # エラーの内容を確認
         error_msg = str(e)
         if "404" in error_msg or "NOT_FOUND" in error_msg:
-            # モデルが見つからない場合、実験版の 2.0-flash-exp に切り替える
-            status_text.warning("⚠️ 安定版モデルの応答がないため、高速版(2.0-flash)に切り替えて再試行します...")
+            status_text.warning("⚠️ モデル切り替え中...")
             try:
-                time.sleep(2) # 少し待つ
+                time.sleep(2)
                 response = execute_search("gemini-2.0-flash-exp")
             except Exception as e2:
-                if "429" in str(e2):
-                    st.error("⚠️ アクセスが集中しています。1分ほど時間を空けてから再度お試しください。")
-                    st.stop()
-                else:
-                    st.error(f"再試行も失敗しました: {e2}")
-                    st.stop()
-        elif "429" in error_msg:
-             st.error("⚠️ アクセス過多です。少し時間を空けてください。")
-             st.stop()
+                st.error(f"エラー: {e2}")
+                st.stop()
         else:
             st.error(f"エラーが発生しました: {e}")
             st.stop()
@@ -162,19 +160,20 @@ if st.button("検索開始", type="primary"):
         name = item.get('name', '')
         url = item.get('url', '')
         
+        # 名前チェック
         if not name or name.lower() in ['unknown', 'イベント']:
             continue
         
-        # URLチェック
+        # URLチェック（許可したドメインが含まれているか）
         is_valid_source = False
-        if url:
-            for target in target_urls:
-                domain = urllib.parse.urlparse(target).netloc
+        if url and url.startswith("http"):
+            for domain in target_domains:
                 if domain in url:
                     is_valid_source = True
                     break
         
         if not is_valid_source:
+            # 怪しいURLはGoogle検索へ置換
             search_query = f"{item['name']} {item['place']} イベント"
             item['url'] = f"https://www.google.com/search?q={urllib.parse.quote(search_query)}"
             item['source_name'] = "Google検索"
@@ -184,8 +183,8 @@ if st.button("検索開始", type="primary"):
     data = cleaned_data
 
     if not data:
-        st.warning(f"⚠️ 指定されたページ内からは、{region} の情報が見つかりませんでした。")
-        st.info("別のサイトを選択するか、エリア名を変更して（例：渋谷区→東京）試してみてください。")
+        st.warning(f"⚠️ 指定されたサイトからは、条件に合う記事が見つかりませんでした。")
+        st.info("サイトの選択を増やすか、エリア名を変更して（例：渋谷区→東京）試してみてください。")
         st.stop()
 
     # データフレーム変換
@@ -274,3 +273,7 @@ if st.button("検索開始", type="primary"):
         - **概要**: {item.get('description')}
         - **ソース**: {url_text}
         """)
+
+    except Exception as e:
+        status_text.empty()
+        st.error(f"予期せぬエラーが発生しました: {e}")
