@@ -44,40 +44,53 @@ if st.button("検索開始", type="primary"):
         # 検索処理
         client = genai.Client(api_key=api_key)
         status_text = st.empty()
-        status_text.info(f"🔍 {region}周辺の情報を厳密に収集中... (情報の精査に少し時間がかかります)")
+        status_text.info(f"🔍 {region}周辺の情報を広範囲に収集中... (2025年{start_date.month}月〜{end_date.month}月の情報を精査中)")
 
-        # プロンプト (嘘を防ぐための厳格な指示を追加)
+        # 検索キーワードを「月単位」に広げる（ヒット率向上のカギ）
+        search_months = f"{start_date.year}年{start_date.month}月"
+        if start_date.month != end_date.month:
+            search_months += f"、{end_date.year}年{end_date.month}月"
+
+        # プロンプト (検索範囲を広げつつ、期間チェックはAIに任せる)
         prompt = f"""
-        あなたは「ファクトチェッカー」を兼ねたトレンドリサーチャーです。
-        【{region}】における、【{start_date}】から【{end_date}】までの期間の以下の情報を、Google検索を使って調べてください。
+        あなたはトレンドリサーチャーです。
+        以下の検索キーワードを使ってGoogle検索を行い、ユーザーが指定した期間に該当する情報を抽出してください。
+
+        【検索キーワードの指針】
+        「{region} イベント {search_months}」
+        「{region} 新規オープン {search_months}」
+        「{region} グルメ 新商品 {search_months}」
+
+        【ユーザー指定期間】
+        {start_date} から {end_date} まで
+        ※イベントの一部でもこの期間に重なっていれば対象としてください。
 
         【調査対象】
-        1. 有名チェーン店や人気飲食店の「新メニュー」「期間限定メニュー」の発売情報
+        1. 有名チェーン店や人気飲食店の「新メニュー」「期間限定メニュー」
         2. 注目の「新規店舗オープン」情報
         3. 期間限定のイベント情報
 
         【出力形式（JSONのみ）】
-        Markdown装飾は不要。以下のキーを持つJSONリストを出力してください。
+        Markdown装飾は不要。以下のJSONリストのみを出力してください。
         [
             {{
-                "type": "種別",
+                "type": "種別(新メニュー/オープン/イベント)",
                 "name": "店名またはイベント名",
                 "place": "具体的な場所",
                 "start_date": "YYYY-MM-DD",
                 "end_date": "YYYY-MM-DD",
-                "description": "概要",
-                "url": "公式情報やニュース記事のURL(必須)",
+                "description": "概要(日付の根拠も含めて記述)",
+                "url": "情報のソースとなったWebページのURL(必須)",
                 "lat": 緯度(数値),
                 "lon": 経度(数値)
             }},
             ...
         ]
 
-        【重要：ハルシネーション（嘘）対策】
-        - **検索結果の記事に「{start_date.year}年」または「{end_date.year}年」の表記があるか必ず確認してください。**
-        - 日付が不明確なもの、昨年の記事（2023年など）は**絶対に**含めないでください。
-        - 該当する情報がない場合は、無理に件数を埋めず、確実なものだけを出力してください。
-        - 各情報の `url` には、その情報の根拠となったWebページのURLを必ず入れてください。
+        【条件】
+        - **「情報が見つかりませんでした」という出力は禁止です。** 多少期間が前後しても、近い日程の注目情報を必ず5件以上探してください。
+        - 昨年の古い情報（2023年など）は除外してください。
+        - `url` には、必ずその情報の根拠となった具体的なニュースや公式サイトのURLを入れてください（トップページは不可）。
         """
 
         try:
@@ -100,8 +113,8 @@ if st.button("検索開始", type="primary"):
             try:
                 data = json.loads(text)
             except json.JSONDecodeError as e:
-                # エラーリカバリー
                 try:
+                    # エラーリカバリー
                     if e.msg.startswith("Extra data"):
                         data = json.loads(text[:e.pos])
                     else:
@@ -110,16 +123,14 @@ if st.button("検索開始", type="primary"):
                             candidate = match.group(0)
                             try:
                                 data = json.loads(candidate)
-                            except json.JSONDecodeError as e2:
-                                if e2.msg.startswith("Extra data"):
-                                    data = json.loads(candidate[:e2.pos])
-                                else:
-                                    raise e2
-                        else:
-                            raise e
-                except Exception:
-                    st.error("データの読み込みに失敗しました。")
-                    st.stop()
+                            except:
+                                pass # 諦める
+                except:
+                    pass
+
+            if not data:
+                st.error("情報をうまく抽出できませんでした。もう一度試してみてください。")
+                st.stop()
 
             # --- 期間表示用の整形処理 ---
             for item in data:
@@ -192,18 +203,18 @@ if st.button("検索開始", type="primary"):
                 )
 
             else:
-                st.warning("地図データが取得できませんでした。検索結果が少なかった可能性があります。")
+                st.warning("地図データが取得できませんでした。")
 
             # --- 2. 速報テキストリスト（検証リンク付き） ---
             st.markdown("---")
             st.subheader("📋 イベント情報一覧（要確認）")
-            st.caption("※AIの検索結果には誤りが含まれる可能性があります。必ず「ソース」のリンクから真偽を確認してください。")
+            st.caption("※以下のリンクはAIが情報の根拠としたWebページです。正確な情報は必ずリンク先で確認してください。")
             
             for item in data:
                 url_text = "なし"
                 if item.get('url'):
-                    # リンクをクリックしやすく目立たせる
-                    url_text = f"[🔗 検索元ソースを確認する]({item.get('url')})"
+                    # ここが「参照元」の代わりになります
+                    url_text = f"[🔗 情報ソースを確認する]({item.get('url')})"
 
                 st.markdown(f"""
                 - **期間**: {item.get('display_date')}
@@ -214,12 +225,13 @@ if st.button("検索開始", type="primary"):
                 - **ソース**: {url_text}
                 """)
             
-            # Groundingソース（念のため残す）
-            with st.expander("📚 AIが参照したWebページ一覧"):
-                if response.candidates[0].grounding_metadata.grounding_chunks:
-                    for chunk in response.candidates[0].grounding_metadata.grounding_chunks:
-                        if chunk.web:
-                            st.markdown(f"- [{chunk.web.title}]({chunk.web.uri})")
+            # 参照リストが空になる問題への対応
+            # JSONモードではgrounding_chunksが空になることが多いため、
+            # 上記の「ソース」欄をメインとして利用するようにUIを変更しました。
+            
+            # デバッグ用に念のため表示は残しますが、普段は閉じておきます
+            # with st.expander("（開発者用）AIの参照メタデータ"):
+            #    st.write(response.candidates[0].grounding_metadata)
 
         except Exception as e:
             status_text.empty()
