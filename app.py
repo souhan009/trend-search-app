@@ -13,7 +13,7 @@ import urllib.parse
 st.set_page_config(page_title="トレンド・イベント検索", page_icon="🗺️")
 
 st.title("🗺️ トレンド・イベントMap検索")
-st.markdown("指定した「信頼できるイベント一覧ページ」内部のみを検索し、確実な情報を抽出します。")
+st.markdown("指定した「イベントまとめサイト」のリストから、情報を一括抽出します。")
 
 # --- サイドバー: 設定エリア ---
 with st.sidebar:
@@ -24,8 +24,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 🔗 検索対象ページ指定")
     
-    # ★ここが変更点: ドメインではなく「具体的な一覧ページのパス」を指定
-    # site:コマンドはディレクトリを指定すると、その配下のページを検索します
+    # 検索対象ページ
     SPECIFIC_PAGES = {
         "Let's Enjoy Tokyo (関東エリア一覧)": "https://www.enjoytokyo.jp/event/list/regn01/",
         "GO TOKYO (東京公式・イベントカレンダー)": "https://www.gotokyo.org/jp/event-calendar/",
@@ -41,7 +40,7 @@ with st.sidebar:
         default=["Let's Enjoy Tokyo (関東エリア一覧)", "GO TOKYO (東京公式・イベントカレンダー)"]
     )
     
-    st.info("💡 指定されたURL階層の下にある情報のみを検索します。無関係なページはヒットしません。")
+    st.info("💡 指定されたURL階層の下にある情報のみを検索します。")
 
 # --- メインエリア ---
 
@@ -61,12 +60,9 @@ if st.button("検索開始", type="primary"):
     status_text = st.empty()
     status_text.info(f"🔍 {region}の情報を、指定されたページ内から厳密に検索中...")
 
-    # 選択されたURLパスを site: コマンドに変換
-    # 例: site:https://www.enjoytokyo.jp/event/list/regn01/
     target_urls = [SPECIFIC_PAGES[name] for name in selected_pages]
     site_query = " OR ".join([f"site:{url}" for url in target_urls])
     
-    # 今日の日付
     today = datetime.date.today()
     
     # プロンプト
@@ -104,7 +100,8 @@ if st.button("検索開始", type="primary"):
     try:
         # AIにリクエスト
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            # ★ここを変更: 2.0-flash -> 1.5-flash (制限に引っかかりにくいモデル)
+            model="gemini-1.5-flash",
             contents=prompt,
             config=types.GenerateContentConfig(
                 tools=[types.Tool(google_search=types.GoogleSearch())],
@@ -137,25 +134,19 @@ if st.button("検索開始", type="primary"):
             name = item.get('name', '')
             url = item.get('url', '')
             
-            # 名前チェック
             if not name or name.lower() in ['unknown', 'イベント']:
                 continue
             
             # URLチェック
-            # 指定されたパス（ターゲットURL）のいずれかが含まれているか確認
-            # または Google検索結果のURLになっているか
             is_valid_source = False
             if url:
                 for target in target_urls:
-                    # target: https://www.enjoytokyo.jp/event/list/regn01/
-                    # domain: www.enjoytokyo.jp
                     domain = urllib.parse.urlparse(target).netloc
                     if domain in url:
                         is_valid_source = True
                         break
             
             if not is_valid_source:
-                # ソースが怪しい場合、Google検索リンクに差し替える安全策
                 search_query = f"{item['name']} {item['place']} イベント"
                 item['url'] = f"https://www.google.com/search?q={urllib.parse.quote(search_query)}"
                 item['source_name'] = "Google検索"
