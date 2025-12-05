@@ -15,8 +15,8 @@ import re
 # ページの設定
 st.set_page_config(page_title="トレンド・イベント検索", page_icon="📖", layout="wide")
 
-st.title("📖 イベント情報「一括直読」抽出アプリ")
-st.markdown("Webページを読み込み、**手持ちのCSVにない新しい情報のみ**を抽出します。")
+st.title("📖 イベント情報「完全網羅」抽出アプリ")
+st.markdown("Webページを分割して読み込み、**手持ちのCSVにない新しい情報のみ**を漏らさず抽出します。")
 
 # --- ユーティリティ関数 ---
 
@@ -33,13 +33,26 @@ def normalize_string(text):
     """
     文字列比較用の正規化関数（推測用）
     スペース削除、全角半角統一、小文字化を行い、揺らぎを吸収する
-    例: "渋谷 PARCO" -> "渋谷parco"
     """
     if not isinstance(text, str):
         return ""
     text = text.replace(" ", "").replace("　", "")
     text = text.replace("（", "").replace("）", "").replace("(", "").replace(")", "")
     return text.lower()
+
+def split_text_into_chunks(text, chunk_size=15000, overlap=1000):
+    """
+    テキストを指定サイズで分割するジェネレータ。
+    情報の分断を防ぐため、overlap文字分だけ前後のチャンクを重複させる。
+    """
+    start = 0
+    text_len = len(text)
+    
+    while start < text_len:
+        end = start + chunk_size
+        yield text[start:end]
+        # 次の開始位置は、現在の終了位置からoverlapを引いた場所（重複させる）
+        start = end - overlap
 
 # --- Session State ---
 if 'extracted_data' not in st.session_state:
@@ -62,7 +75,6 @@ with st.sidebar:
         default=["PRTIMES (最新プレスリリース)"]
     )
 
-    # カスタムURL入力をここに配置
     st.markdown("### 🔗 カスタムURL")
     custom_urls_text = st.text_area("その他のURL (1行に1つ)", height=100, help="https://www.atpress.ne.jp/ など、解析したい他のURLを入力してください。")
     
@@ -95,7 +107,7 @@ with st.sidebar:
 
 # --- メインエリア ---
 
-if st.button("一括読み込み開始", type="primary"):
+if st.button("一括読み込み開始 (完全網羅モード)", type="primary"):
     try:
         api_key = st.secrets["GOOGLE_API_KEY"]
     except:
@@ -128,7 +140,6 @@ if st.button("一括読み込み開始", type="primary"):
     status_text = st.empty()
     total_urls = len(targets)
     
-    # 統計用
     skipped_count_duplicate_csv = 0
     
     # --- ループ処理 ---
@@ -136,8 +147,8 @@ if st.button("一括読み込み開始", type="primary"):
         url = target['url']
         label = target['label']
         
+        status_text.info(f"⏳ ({i+1}/{total_urls}) 解析中...: {label}")
         progress_bar.progress(i / total_urls)
-        status_text.info(f"⏳ ({i+1}/{total_urls}) 読み込み中...: {label}")
         
         try:
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
@@ -150,78 +161,112 @@ if st.button("一括読み込み開始", type="primary"):
 
             soup = BeautifulSoup(response.text, "html.parser")
             
-            # 【修正】ノイズ除去の強化: script, styleに加え、フォームやナビゲーションの一部も除外
+            # ノイズ除去
             for script in soup(["script", "style", "nav", "footer", "iframe", "header", "noscript", "form"]):
                 script.decompose()
             
-            # 【修正】読み込み上限を 50,000 -> 300,000 に拡大 (AtPress等の長いページ対応)
-            page_text = soup.get_text(separator="\n", strip=True)[:300000]
-
-            prompt = f"""
-            あなたはデータ抽出アシスタントです。
-            以下のWebページのテキストから「イベント情報」を抽出し、JSON形式でリスト化してください。
-
-            【前提情報】
-            ・本日の日付: {today.strftime('%Y年%m月%d日')}
-            ・ページURL: {url}
-            ・サイト名: {label}
-            【テキスト内容】
-            {page_text}
-
-            【抽出ルール】
-            1. イベント名、期間、場所、概要を抽出してください。
-            2. 日付は**「YYYY年MM月DD日」形式（月と日は2桁ゼロ埋め）** に変換してください。
-            3. 場所の緯度経度（lat, lon）は、場所名から推測して埋めてください。
-            4. `source_url` はこのページのURL({url})としてください。
-
-            【出力形式（JSONのみ）】
-            [
-                {{
-                    "name": "イベント名",
-                    "place": "開催場所",
-                    "date_info": "期間(YYYY年MM月DD日)",
-                    "description": "概要(簡潔に)",
-                    "lat": 緯度(数値),
-                    "lon": 経度(数値)
-                }}
-            ]
-            """
-
-            ai_response = client.models.generate_content(
-                model="gemini-2.0-flash-exp",
-                contents=prompt,
-                config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0)
-            )
+            # テキスト全体を取得（最大50万文字まで拡張）
+            full_text = soup.get_text(separator="\n", strip=True)[:500000]
             
-            extracted_list = json.loads(ai_response.text.replace("```json", "").replace("```", "").strip())
+            # --- ★ここから分割処理 (Chunking) ---
+            # テキストを15,000文字ずつのブロックに分割して処理する
+            # ※ 一度に投げるとAIが途中を省略してしまうため
+            chunks = list(split_text_into_chunks(full_text, chunk_size=15000, overlap=1000))
             
-            if isinstance(extracted_list, list):
-                for item in extracted_list:
-                    # --- ★ここでCSVとの照合を行う ---
-                    n_key = normalize_string(item.get('name', ''))
-                    p_key = normalize_string(item.get('place', ''))
+            chunk_results = []
+            
+            # 分割したブロックごとにAIへ問い合わせ
+            chunk_progress = st.progress(0)
+            for cid, chunk_text in enumerate(chunks):
+                # サブプログレスバー更新
+                chunk_progress.progress((cid + 1) / len(chunks))
+                
+                prompt = f"""
+                あなたは完璧なデータ抽出マシンです。
+                以下のWebページのテキスト（断片）から、全ての「イベント情報」または「プレスリリース」を抽出し、JSONリストで出力してください。
+                **省略は一切許されません。些細な情報も含め、見つかったものは全てリストアップしてください。**
+
+                【前提情報】
+                ・本日の日付: {today.strftime('%Y年%m月%d日')}
+                ・参照URL: {url}
+                
+                【テキスト内容（断片）】
+                {chunk_text}
+
+                【厳格な抽出ルール】
+                1. テキストに含まれる「イベント」「新商品」「キャンペーン」「展示会」などの情報を抽出する。
+                2. 日付は「YYYY年MM月DD日」形式。
+                3. 場所（lat, lon）は場所名から推測する。
+                4. 情報がテキスト内で完結していない（文中で切れている）場合は、無理に補完せず、確実な情報のみ抽出する。
+                5. 出力はJSONのみ。
+
+                【出力形式】
+                [
+                    {{
+                        "name": "イベント名",
+                        "place": "開催場所",
+                        "date_info": "期間",
+                        "description": "概要",
+                        "lat": 緯度(数値),
+                        "lon": 経度(数値)
+                    }}
+                ]
+                """
+
+                try:
+                    ai_response = client.models.generate_content(
+                        model="gemini-2.0-flash-exp",
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json", 
+                            temperature=0.0
+                        )
+                    )
                     
-                    # CSVのデータセットに含まれているか確認
-                    # 場所が空欄の場合は名前だけで判定、場所がある場合は両方一致で判定
-                    is_in_csv = False
-                    if (n_key, p_key) in existing_fingerprints:
-                        is_in_csv = True
-                    elif p_key == "" and any(ef[0] == n_key for ef in existing_fingerprints):
-                        # 場所情報がないイベントの場合、名前だけで重複判定
-                        is_in_csv = True
-                    
-                    if is_in_csv:
-                        skipped_count_duplicate_csv += 1
-                        continue # CSVにあるので追加しない
+                    # JSONパース
+                    raw_json = ai_response.text.replace("```json", "").replace("```", "").strip()
+                    extracted = json.loads(raw_json)
+                    if isinstance(extracted, list):
+                        chunk_results.extend(extracted)
+                        
+                except Exception as e:
+                    # 分割の一部が失敗しても全体を止めない
+                    print(f"Chunk error: {e}")
+                    continue
+                
+                time.sleep(1) # API制限回避用ウェイト
 
-                    # 新規データのみ追加
-                    item['source_label'] = label
-                    item['source_url'] = url
-                    if item.get('date_info'):
-                        item['date_info'] = normalize_date(item['date_info'])
-                    all_data.append(item)
+            chunk_progress.empty() # サブバー消去
+
+            # --- 分割結果の統合と重複チェック ---
+            seen_in_page = set()
             
-            time.sleep(1)
+            for item in chunk_results:
+                # ページ内での重複排除（Chunkのオーバーラップ対策）
+                n_key = normalize_string(item.get('name', ''))
+                if not n_key or n_key in seen_in_page:
+                    continue
+                seen_in_page.add(n_key)
+
+                # CSVとの重複チェック
+                p_key = normalize_string(item.get('place', ''))
+                
+                is_in_csv = False
+                if (n_key, p_key) in existing_fingerprints:
+                    is_in_csv = True
+                elif p_key == "" and any(ef[0] == n_key for ef in existing_fingerprints):
+                    is_in_csv = True
+                
+                if is_in_csv:
+                    skipped_count_duplicate_csv += 1
+                    continue
+
+                # 採用
+                item['source_label'] = label
+                item['source_url'] = url
+                if item.get('date_info'):
+                    item['date_info'] = normalize_date(item['date_info'])
+                all_data.append(item)
 
         except Exception as e:
             st.warning(f"スキップしました: {label} (エラー: {e})")
@@ -238,13 +283,12 @@ if st.button("一括読み込み開始", type="primary"):
         st.error("情報が見つかりませんでした。")
         st.session_state.extracted_data = None
     else:
-        # 内部での重複削除
+        # 最終的なリストの重複排除（念の為）
         unique_data = []
         seen_keys = set()
         for item in all_data:
             name_key = normalize_string(item.get('name', ''))
             place_key = normalize_string(item.get('place', ''))
-            if not name_key: continue
             
             if (name_key, place_key) not in seen_keys:
                 seen_keys.add((name_key, place_key))
