@@ -1,751 +1,359 @@
 import streamlit as st
-
 import datetime
-
 from google import genai
-
 from google.genai import types
-
 import os
-
 import json
-
 import pandas as pd
-
 import requests
-
 from bs4 import BeautifulSoup
-
 import time
-
 import urllib.parse
-
 import re
 
-
-
 # ページの設定
-
-st.set_page_config(page_title="トレンド・イベント検索", page_icon="📖", layout="wide")
-
-
+st.set_page_config(page_title="トレンド・イベント検索（多ページ対応）", page_icon="📖", layout="wide")
 
 st.title("📖 イベント情報「全件網羅」抽出アプリ")
-
-st.markdown("Webページを細かく分割して読み込み、**ページ内の情報を端から端まで全て**抽出します。")
-
-
+st.markdown("""
+**AI × スマートクローリング**
+Webページを読み込み、**「もっと見る」や「次へ」のリンクを自動で辿って**、奥にある記事まで抽出します。
+""")
 
 # --- ユーティリティ関数 ---
 
-
-
 def normalize_date(text):
-
     """日付をゼロ埋めYYYY年MM月DD日形式に統一"""
-
     if not text: return text
-
     def replace_func(match):
-
         return f"{match.group(1)}年{match.group(2).zfill(2)}月{match.group(3).zfill(2)}日"
-
     text = re.sub(r'(\d{4})年(\d{1,2})月(\d{1,2})日', replace_func, text)
-
     text = re.sub(r'(\d{4})/(\d{1,2})/(\d{1,2})', lambda m: f"{m.group(1)}/{m.group(2).zfill(2)}/{m.group(3).zfill(2)}", text)
-
     return text
 
-
-
 def normalize_string(text):
-
     """文字列比較用の正規化関数"""
-
     if not isinstance(text, str):
-
         return ""
-
     text = text.replace(" ", "").replace("　", "")
-
     text = text.replace("（", "").replace("）", "").replace("(", "").replace(")", "")
-
     return text.lower()
 
-
-
 def safe_json_parse(json_str):
-
-    """
-
-    不完全なJSON文字列から、有効なオブジェクトのみを救出してパースする関数。
-
-    """
-
+    """不完全なJSON文字列から、有効なオブジェクトのみを救出する"""
     if not json_str: return []
-
     json_str = json_str.replace("```json", "").replace("```", "").strip()
-
     
-
     try:
-
         return json.loads(json_str)
-
     except json.JSONDecodeError:
-
         try:
-
             last_brace_index = json_str.rfind("}")
-
-            if last_brace_index == -1:
-
-                return [] 
-
+            if last_brace_index == -1: return [] 
             repaired_json = json_str[:last_brace_index+1] + "]"
-
             return json.loads(repaired_json)
-
         except:
-
             return []
 
-
-
 def split_text_into_chunks(text, chunk_size=8000, overlap=500):
-
-    """
-
-    テキストを分割するジェネレータ。
-
-    """
-
+    """テキスト分割ジェネレータ"""
     if not text: return
-
     start = 0
-
     text_len = len(text)
-
     while start < text_len:
-
         end = start + chunk_size
-
         yield text[start:end]
-
         start = end - overlap
 
+def find_next_page_url(soup, current_url):
+    """
+    HTML内から「次へ」や「もっと見る」のURLを探し出す関数
+    """
+    next_url = None
+    
+    # パターン1: ユーザー指定の特定クラス（優先）
+    target_btn = soup.select_one("a.js-list-article-more-button")
+    if target_btn and target_btn.get('href'):
+        next_url = target_btn['href']
+        
+    # パターン2: rel="next"
+    if not next_url:
+        link_next = soup.find("link", rel="next")
+        if link_next and link_next.get('href'):
+            next_url = link_next['href']
 
+    # パターン3: 一般的なページネーションクラス
+    if not next_url:
+        # "次へ", "Next", "More" を含むaタグ、または page-link などのクラス
+        candidates = soup.find_all("a", href=True)
+        for a in candidates:
+            text = a.get_text(strip=True)
+            cls = " ".join(a.get("class", []))
+            
+            # テキストやクラス名で判定
+            if "次へ" in text or "Next" in text or "more" in cls.lower() or "next" in cls.lower():
+                # 明らかにトップに戻るようなリンクは除外
+                if len(a['href']) > 2: 
+                    next_url = a['href']
+                    break
+    
+    if next_url:
+        # 相対パスを絶対パスに変換
+        return urllib.parse.urljoin(current_url, next_url)
+    
+    return None
 
 # --- Session State ---
-
 if 'extracted_data' not in st.session_state:
-
     st.session_state.extracted_data = None
-
 if 'last_update' not in st.session_state:
-
     st.session_state.last_update = None
 
-
-
 # --- サイドバー: 設定エリア ---
-
 with st.sidebar:
-
     st.header("1. 読み込み対象")
-
     
-
     PRESET_URLS = {
-
-        # PR TIMES
-
         "PRTIMES (グルメ)": "https://prtimes.jp/gourmet/",
-
-        "PRTIMES (ビジネス)": "https://prtimes.jp/business/",
-
-        "PRTIMES (ライフスタイル)": "https://prtimes.jp/lifestyle/",
-
-        "PRTIMES (ファッション)": "https://prtimes.jp/fashion/",
-
-        "PRTIMES (ビューティ)": "https://prtimes.jp/beauty/",
-
         "PRTIMES (エンタメ)": "https://prtimes.jp/entertainment/",
-
-        
-
-        # AtPress
-
-        "AtPress (新着ニュース)": "https://www.atpress.ne.jp/news",
-
-        "AtPress (ランキング)": "https://www.atpress.ne.jp/service/release_ranking",
-
-        "AtPress (エンタメ)": "https://www.atpress.ne.jp/news/entertainment",
-
         "AtPress (グルメ)": "https://www.atpress.ne.jp/news/food",
-
-        "AtPress (旅行・観光)": "https://www.atpress.ne.jp/news/travel",
-
-        "AtPress (ファッション)": "https://www.atpress.ne.jp/news/fashion"
-
+        "AtPress (新着)": "https://www.atpress.ne.jp/news",
     }
-
     
-
     selected_presets = st.multiselect(
-
         "サイトを選択",
-
         options=list(PRESET_URLS.keys()),
-
-        default=["PRTIMES (グルメ)", "AtPress (グルメ)"]
-
+        default=["PRTIMES (グルメ)"]
     )
 
-
-
     st.markdown("### 🔗 カスタムURL")
-
-    custom_urls_text = st.text_area("その他のURL (1行に1つ)", height=100)
-
+    custom_urls_text = st.text_area("URLを入力 (1行に1つ)", height=100)
     
-
     st.markdown("---")
-
-    st.markdown("### 2. 既存データ除外 (オプション)")
-
-    uploaded_file = st.file_uploader("過去CSVをアップロード (除外用)", type="csv")
-
+    st.header("2. 探索深度")
+    max_pages = st.slider("読み込む最大ページ数", 1, 10, 3, help="「もっと見る」を何回辿るか指定します。多いと時間がかかります。")
     
-
+    st.markdown("---")
+    st.markdown("### 3. 既存データ除外")
+    uploaded_file = st.file_uploader("過去CSV (重複除外用)", type="csv")
+    
     existing_fingerprints = set()
-
     if uploaded_file is not None:
-
         try:
-
             existing_df = pd.read_csv(uploaded_file)
-
             count = 0
-
             name_col = next((col for col in existing_df.columns if 'イベント名' in col or 'Name' in col), None)
-
             place_col = next((col for col in existing_df.columns if '場所' in col or 'Place' in col), None)
 
-
-
             if name_col:
-
                 for _, row in existing_df.iterrows():
-
                     n = normalize_string(row[name_col])
-
                     p = normalize_string(row[place_col]) if place_col else ""
-
                     existing_fingerprints.add((n, p))
-
                     count += 1
-
-                st.success(f"📚 既存データ {count}件 を読み込みました。")
-
-            else:
-
-                st.error("CSVに「イベント名」列が見つかりません。")
-
+                st.success(f"📚 {count}件の既存データをロード")
         except Exception as e:
-
-            st.error(f"CSV読み込みエラー: {e}")
-
-
+            st.error(f"CSV読込エラー: {e}")
 
 # --- メインエリア ---
 
-
-
 if st.button("一括読み込み開始", type="primary"):
-
     try:
-
         api_key = st.secrets["GOOGLE_API_KEY"]
-
     except:
-
         st.error("⚠️ APIキーが設定されていません。")
-
         st.stop()
 
-
-
+    # ターゲットリスト作成
     targets = []
-
     for label in selected_presets:
-
         targets.append({"url": PRESET_URLS[label], "label": label})
-
     
-
     if custom_urls_text:
-
         for url in custom_urls_text.split('\n'):
-
             url = url.strip()
-
             if url and url.startswith("http"):
-
                 domain = urllib.parse.urlparse(url).netloc
-
                 targets.append({"url": url, "label": f"カスタム ({domain})"})
-
     
-
+    # 重複URL削除
     unique_targets = {t['url']: t for t in targets}
-
     targets = list(unique_targets.values())
 
-
-
     if not targets:
-
-        st.error("⚠️ URLが指定されていません。")
-
+        st.error("URLを指定してください。")
         st.stop()
 
-
-
     all_data = []
-
     client = genai.Client(api_key=api_key)
-
     today = datetime.date.today()
-
     
-
-    progress_bar = st.progress(0)
-
+    main_progress = st.progress(0)
     status_text = st.empty()
-
-    total_urls = len(targets)
-
     skipped_count_duplicate_csv = 0
-
     
-
-    # --- ループ処理 ---
-
-    for i, target in enumerate(targets):
-
-        url = target['url']
-
+    # --- サイトごとのループ ---
+    for idx, target in enumerate(targets):
+        base_url = target['url']
         label = target['label']
-
         
-
-        status_text.info(f"⏳ ({i+1}/{total_urls}) 解析中...: {label}")
-
-        progress_bar.progress(i / total_urls)
-
+        current_url = base_url
         
-
-        try:
-
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
-
-            response = requests.get(url, headers=headers, timeout=15)
-
-            response.encoding = response.apparent_encoding
-
+        # --- ページごとのループ (指定回数まで) ---
+        for page_num in range(1, max_pages + 1):
             
-
-            if response.status_code != 200:
-
-                st.warning(f"⚠️ アクセス失敗: {url}")
-
-                continue
-
-
-
-            soup = BeautifulSoup(response.text, "html.parser")
-
+            progress_percent = (idx / len(targets)) + ((page_num / max_pages) / len(targets))
+            main_progress.progress(min(progress_percent, 1.0))
+            status_text.info(f"🔎 {label} | {page_num}ページ目を解析中...\nURL: {current_url}")
             
-
-            # 不要タグ削除
-
-            tags_to_remove = soup.find_all(["script", "style", "nav", "footer", "iframe", "header", "noscript", "form", "svg"])
-
-            for tag in tags_to_remove:
-
-                if tag: tag.decompose()
-
-            
-
-            # クラス名による不要エリア削除
-
-            exclude_keywords = ['sidebar', 'side-bar', 'ranking', 'recommend', 'widget', 'advertisement', 'pankuzu', 'breadcrumb']
-
-            potential_noise_tags = list(soup.find_all(attrs={"class": True}))
-
-            for tag in potential_noise_tags:
-
-                if tag is None: continue
-
-                try:
-
-                    classes = tag.get("class")
-
-                except AttributeError:
-
-                    continue
-
-                if not classes: continue
-
+            try:
+                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124"}
+                response = requests.get(current_url, headers=headers, timeout=15)
+                response.encoding = response.apparent_encoding
                 
+                if response.status_code != 200:
+                    st.warning(f"アクセス不可: {current_url}")
+                    break
 
-                if isinstance(classes, list):
-
-                    classes_str = " ".join(classes).lower()
-
-                else:
-
-                    classes_str = str(classes).lower()
-
+                soup = BeautifulSoup(response.text, "html.parser")
                 
-
-                if any(k in classes_str for k in exclude_keywords):
-
+                # 次のページのURLを探しておく
+                next_page_url = find_next_page_url(soup, current_url)
+                
+                # --- クリーニング ---
+                for tag in soup.find_all(["script", "style", "nav", "footer", "iframe", "header", "noscript", "svg"]):
                     tag.decompose()
-
-            
-
-            full_text = soup.get_text(separator="\n", strip=True)
-
-            
-
-            # --- 分割処理 (小分けにして全件取得) ---
-
-            chunks = list(split_text_into_chunks(full_text, chunk_size=8000, overlap=500))
-
-            
-
-            chunk_results = []
-
-            chunk_progress = st.progress(0)
-
-            
-
-            for cid, chunk_text in enumerate(chunks):
-
-                if not chunk_text: continue
-
-                chunk_progress.progress((cid + 1) / len(chunks))
-
                 
-
-                prompt = f"""
-
-                あなたはデータ抽出の専門家です。
-
-                以下のテキスト（Webページの断片）から、含まれる**全ての**記事・イベント情報をJSONリストで抽出してください。
-
-
-
-                【重要指示】
-
-                ・**省略厳禁です。** テキスト内にある情報は、どんなに数が多くても全てリストアップしてください。
-
-                ・前のチャンクと内容が被っていても構いません（後でプログラムが重複削除します）。
-
-
-
-                【前提情報】
-
-                ・本日の日付: {today.strftime('%Y年%m月%d日')}
-
-                ・参照URL: {url}
-
+                # メインコンテンツ以外を削除（ノイズ除去）
+                exclude = ['sidebar', 'ranking', 'recommend', 'widget', 'ad', 'bread']
+                for tag in soup.find_all(attrs={"class": True}):
+                    if not tag: continue
+                    c_str = str(tag.get("class")).lower()
+                    if any(x in c_str for x in exclude):
+                        tag.decompose()
                 
-
-                【テキスト内容】
-
-                {chunk_text}
-
-
-
-                【出力形式 (JSON List)】
-
-                [
-
-                    {{
-
-                        "name": "イベント名または記事タイトル",
-
-                        "place": "場所(なければ空欄)",
-
-                        "date_info": "日付(YYYY年MM月DD日)",
-
-                        "description": "概要(1行)"
-
-                    }}
-
-                ]
-
-                """
-
-
-
-                try:
-
-                    ai_response = client.models.generate_content(
-
-                        model="gemini-2.0-flash-exp",
-
-                        contents=prompt,
-
-                        config=types.GenerateContentConfig(
-
-                            response_mime_type="application/json", 
-
-                            temperature=0.0
-
-                        )
-
-                    )
-
+                full_text = soup.get_text(separator="\n", strip=True)
+                chunks = list(split_text_into_chunks(full_text))
+                
+                # --- AI抽出 (チャンクごと) ---
+                for chunk in chunks:
+                    if not chunk: continue
                     
-
-                    extracted = safe_json_parse(ai_response.text)
-
-                    if isinstance(extracted, list):
-
-                        chunk_results.extend(extracted)
-
+                    prompt = f"""
+                    以下のWebテキストから、イベント・ニュース情報をJSONリストで抽出せよ。
+                    【現在: {today}】
+                    
+                    [出力ルール]
+                    - テキストにある情報は全て抽出すること。省略厳禁。
+                    - 古いイベントも抽出してよい。
+                    
+                    Text:
+                    {chunk[:10000]}
+                    
+                    JSON Output Example:
+                    [
+                        {{
+                            "name": "タイトル",
+                            "place": "場所",
+                            "date_info": "YYYY年MM月DD日",
+                            "description": "概要"
+                        }}
+                    ]
+                    """
+                    
+                    try:
+                        ai_res = client.models.generate_content(
+                            model="gemini-2.0-flash-exp",
+                            contents=prompt,
+                            config=types.GenerateContentConfig(
+                                response_mime_type="application/json", 
+                                temperature=0.0
+                            )
+                        )
+                        extracted = safe_json_parse(ai_res.text)
                         
-
-                except Exception as e:
-
-                    print(f"Chunk error: {e}")
-
-                    continue
-
-                
-
-                time.sleep(1)
-
-
-
-            chunk_progress.empty()
-
-
-
-            # --- 結果統合 ---
-
-            seen_in_page = set()
-
+                        if isinstance(extracted, list):
+                            for item in extracted:
+                                if not item.get('name'): continue
+                                
+                                # 重複チェック
+                                n = normalize_string(item['name'])
+                                p = normalize_string(item.get('place', ''))
+                                
+                                # CSVとの重複確認
+                                if (n, p) in existing_fingerprints:
+                                    skipped_count_duplicate_csv += 1
+                                    continue
+                                
+                                item['source_label'] = label
+                                item['source_url'] = current_url # ページURLを保存
+                                item['date_info'] = normalize_date(item.get('date_info', ''))
+                                all_data.append(item)
+                                
+                    except Exception as e:
+                        print(f"AI Error: {e}")
+                        time.sleep(1)
             
-
-            for item in chunk_results:
-
-                if item is None or not isinstance(item, dict):
-
-                    continue
-
-
-
-                n_key = normalize_string(item.get('name', ''))
-
-                if not n_key or n_key in seen_in_page:
-
-                    continue
-
-                seen_in_page.add(n_key)
-
-
-
-                p_key = normalize_string(item.get('place', ''))
-
+                # 次のページがなければ終了、あればURL更新してループ継続
+                if not next_page_url:
+                    break
+                current_url = next_page_url
+                time.sleep(1) # サーバー負荷軽減
                 
+            except Exception as e:
+                st.warning(f"エラー発生: {e}")
+                break
 
-                is_in_csv = False
+    main_progress.empty()
 
-                if (n_key, p_key) in existing_fingerprints:
-
-                    is_in_csv = True
-
-                elif p_key == "" and any(ef[0] == n_key for ef in existing_fingerprints):
-
-                    is_in_csv = True
-
-                
-
-                if is_in_csv:
-
-                    skipped_count_duplicate_csv += 1
-
-                    continue
-
-
-
-                item['source_label'] = label
-
-                item['source_url'] = url
-
-                if item.get('date_info'):
-
-                    item['date_info'] = normalize_date(item['date_info'])
-
-                all_data.append(item)
-
-
-
-        except Exception as e:
-
-            st.warning(f"読み込みエラー: {label} (エラー: {e})")
-
-            continue
-
-
-
-    progress_bar.progress(100)
-
-    time.sleep(0.5)
-
-    progress_bar.empty()
-
-
-
-    if not all_data and skipped_count_duplicate_csv > 0:
-
-        st.warning(f"データは取得できましたが、全てアップロードされたCSVに含まれる「既知の情報」でした。（除外数: {skipped_count_duplicate_csv}件）")
-
-        st.session_state.extracted_data = None
-
-    elif not all_data:
-
-        st.error("情報が見つかりませんでした。")
-
-        st.session_state.extracted_data = None
-
-    else:
-
-        unique_data = []
-
-        seen_keys = set()
-
-        for item in all_data:
-
-            name_key = normalize_string(item.get('name', ''))
-
-            place_key = normalize_string(item.get('place', ''))
-
-            
-
-            if (name_key, place_key) not in seen_keys:
-
-                seen_keys.add((name_key, place_key))
-
-                unique_data.append(item)
-
-        
-
-        st.session_state.extracted_data = unique_data
-
-        st.session_state.last_update = datetime.datetime.now().strftime("%H:%M:%S")
-
-        
-
-        msg = f"🎉 読み込み完了！ 新規 {len(unique_data)} 件"
-
+    # --- 結果集計 ---
+    if not all_data:
         if skipped_count_duplicate_csv > 0:
+            st.warning(f"取得データは全てCSV内の既知情報でした。（除外: {skipped_count_duplicate_csv}件）")
+        else:
+            st.error("情報が見つかりませんでした。")
+        st.session_state.extracted_data = None
+    else:
+        # 重複排除 (ページまたぎ等)
+        unique_data = []
+        seen = set()
+        for d in all_data:
+            key = (normalize_string(d['name']), normalize_string(d.get('place','')))
+            if key not in seen:
+                seen.add(key)
+                unique_data.append(d)
+        
+        st.session_state.extracted_data = unique_data
+        st.session_state.last_update = datetime.datetime.now().strftime("%H:%M:%S")
+        status_text.success(f"🎉 完了！ 新規 {len(unique_data)} 件 (CSV除外: {skipped_count_duplicate_csv}件)")
 
-            msg += f" (CSV重複除外: {skipped_count_duplicate_csv} 件)"
-
-        status_text.success(msg)
-
-
-
-# --- 結果表示エリア ---
-
-
-
-if st.session_state.extracted_data is not None:
-
-    data = st.session_state.extracted_data
-
-    df = pd.DataFrame(data)
-
-
-
-    st.markdown(f"**最終更新: {st.session_state.last_update}** ({len(data)}件)")
-
-
-
-    # 1. テーブル表示
-
-    st.subheader("📋 新規イベント一覧")
-
-
-
-    display_cols = ['date_info', 'name', 'place', 'description', 'source_label', 'source_url']
-
-    available_cols = [c for c in display_cols if c in df.columns]
-
-    display_df = df[available_cols].copy()
-
+# --- 結果表示 ---
+if st.session_state.extracted_data:
+    df = pd.DataFrame(st.session_state.extracted_data)
     
-
-    rename_map = {
-
-        'date_info': '期間', 'name': 'イベント名', 'place': '場所', 
-
-        'description': '概要', 'source_label': '情報源', 'source_url': 'リンクURL'
-
-    }
-
-    display_df = display_df.rename(columns=rename_map)
-
-
-
+    st.markdown(f"**取得件数: {len(df)}**")
+    
+    # 表示用加工
+    display_df = df.rename(columns={
+        'date_info': '期間', 'name': 'イベント名', 
+        'place': '場所', 'description': '概要', 
+        'source_label': '情報源', 'source_url': 'URL'
+    })
+    
+    # 期間でソート
     try:
-
         display_df = display_df.sort_values('期間')
-
-    except:
-
-        pass
-
-
+    except: pass
 
     st.dataframe(
-
         display_df,
-
         use_container_width=True,
-
         column_config={
-
-            "リンクURL": st.column_config.LinkColumn("元記事", display_text="🔗 リンクを開く"),
-
+            "URL": st.column_config.LinkColumn("元記事", display_text="🔗 Link"),
             "概要": st.column_config.TextColumn("概要", width="large")
-
         },
-
         hide_index=True
-
     )
-
-
-
-    # 2. CSVダウンロード
-
+    
     csv = display_df.to_csv(index=False).encode('utf-8_sig')
-
-    st.download_button(
-
-        label="📥 新規分CSVをダウンロード",
-
-        data=csv,
-
-        file_name="events_new_only.csv",
-
-        mime='text/csv'
-
-    )
+    st.download_button("📥 CSVダウンロード", csv, "events_full.csv", "text/csv")
