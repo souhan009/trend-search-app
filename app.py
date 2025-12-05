@@ -1,361 +1,579 @@
 import streamlit as st
 import datetime
-from google import genai
-from google.genai import types
 import os
 import json
+import time
+import re
+import urllib.parse
+from typing import List, Dict, Tuple, Optional, Set
+
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-import time
-import urllib.parse
-import re
 
-# ページの設定
-st.set_page_config(page_title="トレンド・イベント検索（多ページ対応）", page_icon="📖", layout="wide")
+from google import genai
+from google.genai import types
 
-st.title("📖 イベント情報「全件網羅」抽出アプリ")
+# ============================================================
+# Streamlit config
+# ============================================================
+st.set_page_config(page_title="イベント情報「全件網羅」抽出アプリ（完成版）", page_icon="📖", layout="wide")
+st.title("📖 イベント情報「全件網羅」抽出アプリ（完成版）")
 st.markdown("""
-**AI × スマートクローリング（修正版）**
-Webページを読み込み、**「もっと見る」や「次へ」のリンクを自動で辿って**、奥にある記事まで抽出します。
+**AI × スマートクローリング（完成版）**  
+一覧ページのカードから**記事URLを収集** → 記事ページ本文を**AIで抽出**し、重複を除外して一覧化します。
 """)
 
-# --- ユーティリティ関数 ---
+# ============================================================
+# Utils
+# ============================================================
 
-def normalize_date(text):
-    """日付をゼロ埋めYYYY年MM月DD日形式に統一"""
-    if not text: return text
-    def replace_func(match):
-        return f"{match.group(1)}年{match.group(2).zfill(2)}月{match.group(3).zfill(2)}日"
-    text = re.sub(r'(\d{4})年(\d{1,2})月(\d{1,2})日', replace_func, text)
-    text = re.sub(r'(\d{4})/(\d{1,2})/(\d{1,2})', lambda m: f"{m.group(1)}/{m.group(2).zfill(2)}/{m.group(3).zfill(2)}", text)
-    return text
+def normalize_date(text: str) -> str:
+    """日付をゼロ埋めでなるべく揃える（文字列のまま扱う）"""
+    if not text or not isinstance(text, str):
+        return ""
 
-def normalize_string(text):
-    """文字列比較用の正規化関数"""
+    # 2025年1月2日 -> 2025年01月02日
+    def rep_ymd(m):
+        return f"{m.group(1)}年{m.group(2).zfill(2)}月{m.group(3).zfill(2)}日"
+    text = re.sub(r"(\d{4})年(\d{1,2})月(\d{1,2})日", rep_ymd, text)
+
+    # 2025/1/2 -> 2025/01/02
+    text = re.sub(
+        r"(\d{4})/(\d{1,2})/(\d{1,2})",
+        lambda m: f"{m.group(1)}/{m.group(2).zfill(2)}/{m.group(3).zfill(2)}",
+        text
+    )
+
+    return text.strip()
+
+def normalize_string(text) -> str:
     if not isinstance(text, str):
         return ""
-    text = text.replace(" ", "").replace("　", "")
-    text = text.replace("（", "").replace("）", "").replace("(", "").replace(")", "")
-    return text.lower()
+    t = text.replace(" ", "").replace("　", "")
+    t = t.replace("（", "").replace("）", "").replace("(", "").replace(")", "")
+    return t.lower().strip()
 
-def safe_json_parse(json_str):
-    """不完全なJSON文字列から、有効なオブジェクトのみを救出する"""
-    if not json_str: return []
-    # コードブロック記号の削除
-    json_str = json_str.replace("```json", "").replace("```", "").strip()
-    
-    try:
-        return json.loads(json_str)
-    except json.JSONDecodeError:
+def safe_json_parse(json_str: str) -> List[Dict]:
+    """Gemini出力の揺れに耐えるJSON救出。リスト抽出→辞書抽出の順。"""
+    if not json_str or not isinstance(json_str, str):
+        return []
+    s = json_str.replace("```json", "").replace("```", "").strip()
+
+    # list candidate
+    l = s.find("[")
+    r = s.rfind("]")
+    if l != -1 and r != -1 and r > l:
+        cand = s[l:r+1]
         try:
-            # 末尾が切れている場合の簡易修復
-            last_brace_index = json_str.rfind("}")
-            if last_brace_index == -1: return [] 
-            repaired_json = json_str[:last_brace_index+1] + "]"
-            return json.loads(repaired_json)
+            obj = json.loads(cand)
+            return obj if isinstance(obj, list) else []
         except:
-            return []
+            pass
 
-def split_text_into_chunks(text, chunk_size=8000, overlap=500):
-    """テキスト分割ジェネレータ"""
-    if not text: return
+    # dict candidate
+    l = s.find("{")
+    r = s.rfind("}")
+    if l != -1 and r != -1 and r > l:
+        cand = s[l:r+1]
+        try:
+            obj = json.loads(cand)
+            return [obj] if isinstance(obj, dict) else []
+        except:
+            pass
+
+    return []
+
+def clean_soup(soup: BeautifulSoup) -> None:
+    """不要要素を削除してテキスト抽出を安定させる"""
+    for tag in soup.find_all(["script", "style", "nav", "footer", "iframe", "header", "noscript", "svg"]):
+        tag.decompose()
+
+    exclude_tokens = ["sidebar", "ranking", "recommend", "widget", "ad", "bread", "breadcrumb", "banner"]
+    for tag in soup.find_all(attrs={"class": True}):
+        cls_list = tag.get("class") or []
+        cls = " ".join(cls_list).lower()
+        if any(tok in cls for tok in exclude_tokens):
+            tag.decompose()
+
+def split_text_into_chunks(text: str, chunk_size=8000, overlap=400):
+    if not text:
+        return
     start = 0
-    text_len = len(text)
-    while start < text_len:
-        end = start + chunk_size
+    n = len(text)
+    while start < n:
+        end = min(start + chunk_size, n)
         yield text[start:end]
-        start = end - overlap
+        start = max(end - overlap, end)
 
-def find_next_page_url(soup, current_url):
-    """
-    HTML内から「次へ」や「もっと見る」のURLを探し出す関数
-    """
-    next_url = None
-    
+def is_valid_href(href: str) -> bool:
+    if not href:
+        return False
+    h = href.strip()
+    if h.startswith("#"):
+        return False
+    if h.lower().startswith("javascript:"):
+        return False
+    return True
+
+def same_domain(url_a: str, url_b: str) -> bool:
     try:
-        # パターン1: ユーザー指定の特定クラス（優先）
-        target_btn = soup.select_one("a.js-list-article-more-button")
-        if target_btn and target_btn.get('href'):
-            next_url = target_btn['href']
-            
-        # パターン2: rel="next"
-        if not next_url:
-            link_next = soup.find("link", rel="next")
-            if link_next and link_next.get('href'):
-                next_url = link_next['href']
+        return urllib.parse.urlparse(url_a).netloc == urllib.parse.urlparse(url_b).netloc
+    except:
+        return False
 
-        # パターン3: 一般的なページネーションクラス
-        if not next_url:
-            candidates = soup.find_all("a", href=True)
-            for a in candidates:
-                text = a.get_text(strip=True)
-                # クラス取得時の安全策
-                cls_list = a.get("class", [])
-                cls = " ".join(cls_list).lower() if cls_list else ""
-                
-                # テキストやクラス名で判定
-                if "次へ" in text or "Next" in text or "more" in cls or "next" in cls:
-                    if len(a['href']) > 2: # 明らかにトップに戻る("#")などは除外
-                        next_url = a['href']
-                        break
-        
-        if next_url:
-            return urllib.parse.urljoin(current_url, next_url)
-            
-    except Exception as e:
-        print(f"Next URL logic error: {e}")
-        return None
-    
+def find_next_page_url(soup: BeautifulSoup, current_url: str) -> Optional[str]:
+    """「次へ」「もっと見る」リンクを探す。誤爆を減らすため優先順をつける。"""
+    next_url = None
+
+    # 1) rel=next
+    link_next = soup.find("link", rel="next")
+    if link_next and link_next.get("href") and is_valid_href(link_next["href"]):
+        next_url = link_next["href"]
+
+    # 2) 明示ボタン（よくある）
+    if not next_url:
+        selectors = [
+            "a[rel='next']",
+            "a.next",
+            "a.pagination__next",
+            "a.pager-next",
+            "a:contains('次へ')",
+        ]
+        # BeautifulSoupは:containsが効かないので、テキスト含みで拾う
+        for a in soup.find_all("a", href=True):
+            txt = a.get_text(strip=True)
+            cls = " ".join(a.get("class") or []).lower()
+            if any(k in txt for k in ["次へ", "次の", "Next", "NEXT"]) or any(k in cls for k in ["next", "more"]):
+                href = a.get("href")
+                if href and is_valid_href(href):
+                    next_url = href
+                    break
+
+    if next_url:
+        joined = urllib.parse.urljoin(current_url, next_url)
+        # 同一ドメイン優先（違うなら無効扱い）
+        if same_domain(joined, current_url):
+            return joined
     return None
 
-# --- Session State ---
-if 'extracted_data' not in st.session_state:
-    st.session_state.extracted_data = None
-if 'last_update' not in st.session_state:
-    st.session_state.last_update = None
+def extract_article_links_from_listing(
+    soup: BeautifulSoup,
+    current_url: str,
+    link_limit: int = 50
+) -> List[str]:
+    """
+    一覧ページから記事URL候補を抽出。
+    - ドメイン内のみ
+    - 明らかに一覧やタグ、ログイン等は除外
+    """
+    base = urllib.parse.urlparse(current_url)
+    candidates: List[str] = []
 
-# --- サイドバー: 設定エリア ---
+    # まず "記事カードっぽい" aタグから多めに拾う（汎用）
+    for a in soup.find_all("a", href=True):
+        href = a.get("href")
+        if not is_valid_href(href):
+            continue
+        url = urllib.parse.urljoin(current_url, href)
+        pu = urllib.parse.urlparse(url)
+
+        # 同一ドメインに限定
+        if pu.netloc != base.netloc:
+            continue
+
+        # ありがちな除外
+        path = (pu.path or "").lower()
+        if any(x in path for x in ["/tag/", "/tags/", "/category/", "/categories/", "/login", "/signup", "/account"]):
+            continue
+
+        # URLが短すぎる/トップっぽいのは除外
+        if len(path.strip("/")) < 3:
+            continue
+
+        candidates.append(url)
+
+    # 重複排除（順序保持）
+    seen = set()
+    uniq = []
+    for u in candidates:
+        if u not in seen:
+            seen.add(u)
+            uniq.append(u)
+
+    return uniq[:link_limit]
+
+def fetch_html(session: requests.Session, url: str, timeout=(5, 20), max_retries=2) -> Optional[str]:
+    """軽いリトライ付きHTML取得"""
+    for attempt in range(max_retries + 1):
+        try:
+            r = session.get(url, timeout=timeout)
+            if r.status_code == 200 and r.text:
+                return r.text
+            # 429/503だけ少し待って再試行
+            if r.status_code in (429, 503) and attempt < max_retries:
+                time.sleep(1.2 * (attempt + 1))
+                continue
+            return None
+        except requests.RequestException:
+            if attempt < max_retries:
+                time.sleep(1.0 * (attempt + 1))
+                continue
+            return None
+    return None
+
+def ai_extract_events_from_text(
+    client: genai.Client,
+    model_name: str,
+    text: str,
+    today: datetime.date,
+) -> List[Dict]:
+    """記事本文（テキスト）からイベント情報を抽出"""
+    all_items: List[Dict] = []
+
+    for chunk in split_text_into_chunks(text, chunk_size=8000, overlap=400):
+        if not chunk or len(chunk) < 80:
+            continue
+
+        prompt = f"""
+以下のWebページ本文から、イベント・ニュース情報をJSON配列で漏れなく抽出してください。
+【現在日付: {today}】
+
+[抽出ルール]
+- 本文に含まれるイベント（展示、催事、キャンペーン、募集、発表会、セミナー等）や、日時・期間・場所が書かれている情報を可能な限り抽出。
+- 省略厳禁（ただし「明らかにイベントではない定型フッタ」などは無理に拾わない）。
+- date_info は本文の表記のままでも良いが、可能なら YYYY年MM月DD日 / YYYY/MM/DD / 期間表現（例: 2025年01月01日〜2025年02月01日）のように分かる形で入れる。
+- 出力は必ず JSON のみ。
+
+[JSON形式]
+[
+  {{
+    "name": "タイトル",
+    "place": "場所（不明なら空文字）",
+    "date_info": "日付や期間（不明なら空文字）",
+    "description": "概要（短めに）"
+  }}
+]
+
+本文:
+{chunk}
+"""
+        try:
+            res = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.0
+                )
+            )
+            extracted = safe_json_parse(res.text)
+            if isinstance(extracted, list):
+                for item in extracted:
+                    if not item or not isinstance(item, dict):
+                        continue
+                    name = item.get("name") or ""
+                    if not name.strip():
+                        continue
+                    item["name"] = str(name).strip()
+                    item["place"] = str(item.get("place") or "").strip()
+                    item["date_info"] = normalize_date(str(item.get("date_info") or "").strip())
+                    item["description"] = str(item.get("description") or "").strip()
+                    all_items.append(item)
+        except Exception:
+            continue
+
+    return all_items
+
+# ============================================================
+# Sidebar
+# ============================================================
 with st.sidebar:
-    st.header("1. 読み込み対象")
-    
+    st.header("1. 対象サイト")
+
     PRESET_URLS = {
         "PRTIMES (グルメ)": "https://prtimes.jp/gourmet/",
         "PRTIMES (エンタメ)": "https://prtimes.jp/entertainment/",
         "AtPress (グルメ)": "https://www.atpress.ne.jp/news/food",
         "AtPress (新着)": "https://www.atpress.ne.jp/news",
     }
-    
+
     selected_presets = st.multiselect(
-        "サイトを選択",
+        "プリセットから選択",
         options=list(PRESET_URLS.keys()),
-        default=["PRTIMES (グルメ)"]
+        default=["PRTIMES (グルメ)"],
     )
 
     st.markdown("### 🔗 カスタムURL")
-    custom_urls_text = st.text_area("URLを入力 (1行に1つ)", height=100)
-    
-    st.markdown("---")
-    st.header("2. 探索深度")
-    max_pages = st.slider("読み込む最大ページ数", 1, 10, 3, help="「もっと見る」を何回辿るか指定します。")
-    
-    st.markdown("---")
-    st.markdown("### 3. 既存データ除外")
-    uploaded_file = st.file_uploader("過去CSV (重複除外用)", type="csv")
-    
-    existing_fingerprints = set()
+    custom_urls_text = st.text_area("URL（1行に1つ）", height=110)
+
+    st.divider()
+    st.header("2. 探索設定")
+    max_pages = st.slider("一覧の最大ページ数（ページ送り回数）", 1, 20, 5)
+    link_limit_per_page = st.slider("1ページあたり収集する記事URL上限", 10, 200, 60, step=10)
+    max_articles_total = st.slider("総記事数の上限（安全策）", 20, 1000, 250, step=10)
+    sleep_sec = st.slider("アクセス間隔（秒）", 0.0, 2.0, 0.6, step=0.1)
+
+    st.divider()
+    st.header("3. Gemini設定")
+    model_name = st.text_input("モデル名", value="gemini-2.0-flash")
+    temperature = st.slider("temperature（通常0推奨）", 0.0, 1.0, 0.0, step=0.1)
+
+    st.divider()
+    st.header("4. 既存CSVによる重複除外")
+    uploaded_file = st.file_uploader("過去CSV（重複除外用）", type="csv")
+
+    existing_fingerprints: Set[Tuple[str, str]] = set()
     if uploaded_file is not None:
         try:
             existing_df = pd.read_csv(uploaded_file)
-            count = 0
-            name_col = next((col for col in existing_df.columns if 'イベント名' in col or 'Name' in col), None)
-            place_col = next((col for col in existing_df.columns if '場所' in col or 'Place' in col), None)
+            name_col = next((c for c in existing_df.columns if "イベント名" in c or c.lower() in ["name", "title"]), None)
+            place_col = next((c for c in existing_df.columns if "場所" in c or c.lower() in ["place", "location"]), None)
 
             if name_col:
                 for _, row in existing_df.iterrows():
-                    n = normalize_string(row[name_col])
-                    p = normalize_string(row[place_col]) if place_col else ""
-                    existing_fingerprints.add((n, p))
-                    count += 1
-                st.success(f"📚 {count}件の既存データをロード")
+                    n = normalize_string(row.get(name_col, ""))
+                    p = normalize_string(row.get(place_col, "")) if place_col else ""
+                    if n:
+                        existing_fingerprints.add((n, p))
+                st.success(f"📚 {len(existing_fingerprints)}件の既存データをロード")
+            else:
+                st.warning("CSVにイベント名列が見つかりませんでした（重複除外なしで続行）。")
         except Exception as e:
             st.error(f"CSV読込エラー: {e}")
 
-# --- メインエリア ---
+# ============================================================
+# Session State
+# ============================================================
+if "extracted_data" not in st.session_state:
+    st.session_state.extracted_data = None
+if "last_update" not in st.session_state:
+    st.session_state.last_update = None
 
+# ============================================================
+# Main logic
+# ============================================================
 if st.button("一括読み込み開始", type="primary"):
+    # API key
     try:
         api_key = st.secrets["GOOGLE_API_KEY"]
-    except:
-        st.error("⚠️ APIキーが設定されていません。")
+    except Exception:
+        api_key = os.environ.get("GOOGLE_API_KEY")
+
+    if not api_key:
+        st.error("⚠️ GOOGLE_API_KEY が設定されていません。st.secrets または環境変数に設定してください。")
         st.stop()
 
+    # targets
     targets = []
     for label in selected_presets:
         targets.append({"url": PRESET_URLS[label], "label": label})
-    
+
     if custom_urls_text:
-        for url in custom_urls_text.split('\n'):
-            url = url.strip()
-            if url and url.startswith("http"):
-                domain = urllib.parse.urlparse(url).netloc
-                targets.append({"url": url, "label": f"カスタム ({domain})"})
-    
-    unique_targets = {t['url']: t for t in targets}
+        for u in custom_urls_text.splitlines():
+            u = u.strip()
+            if u.startswith("http"):
+                domain = urllib.parse.urlparse(u).netloc
+                targets.append({"url": u, "label": f"カスタム ({domain})"})
+
+    unique_targets = {t["url"]: t for t in targets}
     targets = list(unique_targets.values())
 
     if not targets:
         st.error("URLを指定してください。")
         st.stop()
 
-    all_data = []
-    client = genai.Client(api_key=api_key)
     today = datetime.date.today()
-    
-    main_progress = st.progress(0)
-    status_text = st.empty()
-    skipped_count_duplicate_csv = 0
-    
-    # --- サイトごとのループ ---
-    for idx, target in enumerate(targets):
-        base_url = target['url']
-        label = target['label']
-        current_url = base_url
-        
-        # --- ページごとのループ ---
-        for page_num in range(1, max_pages + 1):
-            
-            progress_percent = (idx / len(targets)) + ((page_num / max_pages) / len(targets))
-            main_progress.progress(min(progress_percent, 1.0))
-            status_text.info(f"🔎 {label} | {page_num}ページ目を解析中...\nURL: {current_url}")
-            
-            try:
-                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124"}
-                response = requests.get(current_url, headers=headers, timeout=15)
-                
-                if response.status_code != 200:
-                    st.warning(f"アクセス不可 (Status: {response.status_code}): {current_url}")
-                    break
 
-                soup = BeautifulSoup(response.text, "html.parser")
-                
-                # 次のページのURLを探す（エラーガード付き）
-                next_page_url = find_next_page_url(soup, current_url)
-                
-                # --- クリーニング ---
-                for tag in soup.find_all(["script", "style", "nav", "footer", "iframe", "header", "noscript", "svg"]):
-                    tag.decompose()
-                
-                exclude = ['sidebar', 'ranking', 'recommend', 'widget', 'ad', 'bread']
-                for tag in soup.find_all(attrs={"class": True}):
-                    if not tag: continue
-                    # クラス名がない場合の安全処理
-                    cls_list = tag.get("class")
-                    if not cls_list: continue
-                    
-                    c_str = str(cls_list).lower()
-                    if any(x in c_str for x in exclude):
-                        tag.decompose()
-                
-                full_text = soup.get_text(separator="\n", strip=True)
-                chunks = list(split_text_into_chunks(full_text))
-                
-                # --- AI抽出 ---
-                for chunk in chunks:
-                    if not chunk: continue
-                    
-                    prompt = f"""
-                    以下のWebテキストから、イベント・ニュース情報をJSONリストで抽出せよ。
-                    【現在: {today}】
-                    
-                    [出力ルール]
-                    - テキストにある情報は全て抽出すること。省略厳禁。
-                    - 古いイベントも抽出してよい。
-                    
-                    Text:
-                    {chunk[:10000]}
-                    
-                    JSON Output Example:
-                    [
-                        {{
-                            "name": "タイトル",
-                            "place": "場所",
-                            "date_info": "YYYY年MM月DD日",
-                            "description": "概要"
-                        }}
-                    ]
-                    """
-                    
-                    try:
-                        ai_res = client.models.generate_content(
-                            model="gemini-2.0-flash-exp",
-                            contents=prompt,
-                            config=types.GenerateContentConfig(
-                                response_mime_type="application/json", 
-                                temperature=0.0
-                            )
-                        )
-                        extracted = safe_json_parse(ai_res.text)
-                        
-                        if isinstance(extracted, list):
-                            for item in extracted:
-                                # ★修正ポイント: itemがNoneまたは辞書でない場合にスキップする安全装置★
-                                if not item or not isinstance(item, dict): 
-                                    continue
-                                
-                                # 名前がないデータはスキップ
-                                if 'name' not in item or not item['name']:
-                                    continue
-                                
-                                n = normalize_string(item['name'])
-                                p = normalize_string(item.get('place', ''))
-                                
-                                if (n, p) in existing_fingerprints:
-                                    skipped_count_duplicate_csv += 1
-                                    continue
-                                
-                                item['source_label'] = label
-                                item['source_url'] = current_url
-                                item['date_info'] = normalize_date(item.get('date_info', ''))
-                                all_data.append(item)
-                                
-                    except Exception as e:
-                        # チャンク解析のエラーは無視して次へ
-                        print(f"AI Chunk Error: {e}")
-                        continue
-            
-                if not next_page_url:
-                    break
-                current_url = next_page_url
-                time.sleep(1) 
-                
-            except Exception as e:
-                st.warning(f"ページ読み込みエラー ({current_url}): {e}")
+    client = genai.Client(api_key=api_key)
+
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+    })
+
+    main_progress = st.progress(0.0)
+    status_box = st.empty()
+
+    # gathering article urls
+    all_article_urls: List[Tuple[str, str]] = []  # (article_url, source_label)
+    visited_listing: Set[str] = set()
+
+    total_units = len(targets) * max_pages
+    unit_done = 0
+
+    for target in targets:
+        base_url = target["url"]
+        label = target["label"]
+        current_url = base_url
+
+        for page_num in range(1, max_pages + 1):
+            unit_done += 1
+            main_progress.progress(min(unit_done / max(total_units, 1), 1.0))
+
+            if current_url in visited_listing:
+                status_box.warning(f"🔁 既に訪問済みの一覧URLのため停止: {current_url}")
                 break
+            visited_listing.add(current_url)
+
+            status_box.info(f"📄 一覧取得: {label} | {page_num}ページ目\n{current_url}")
+
+            html = fetch_html(session, current_url)
+            if not html:
+                status_box.warning(f"アクセス不可: {current_url}")
+                break
+
+            soup = BeautifulSoup(html, "html.parser")
+            next_url = find_next_page_url(soup, current_url)
+
+            # 一覧から記事リンク収集
+            links = extract_article_links_from_listing(
+                soup, current_url, link_limit=link_limit_per_page
+            )
+            for u in links:
+                all_article_urls.append((u, label))
+
+            # 上限安全策
+            if len(all_article_urls) >= max_articles_total:
+                break
+
+            if not next_url:
+                break
+
+            current_url = next_url
+            time.sleep(sleep_sec)
+
+        if len(all_article_urls) >= max_articles_total:
+            break
+
+    # article url de-dup
+    dedup = []
+    seen_url = set()
+    for u, lab in all_article_urls:
+        if u not in seen_url:
+            seen_url.add(u)
+            dedup.append((u, lab))
+    all_article_urls = dedup[:max_articles_total]
+
+    if not all_article_urls:
+        main_progress.empty()
+        status_box.error("一覧ページから記事URLを取得できませんでした。")
+        st.session_state.extracted_data = None
+        st.stop()
+
+    # =========================================================
+    # Extract events from articles
+    # =========================================================
+    status_box.info(f"🧠 記事ページ解析開始（総{len(all_article_urls)}件）")
+    extracted_all: List[Dict] = []
+    visited_article: Set[str] = set()
+
+    skipped_duplicate_csv = 0
+    skipped_duplicate_run = 0
+    failed_articles = 0
+
+    for i, (article_url, label) in enumerate(all_article_urls, start=1):
+        main_progress.progress(min(i / max(len(all_article_urls), 1), 1.0))
+        status_box.info(f"🧠 記事解析 {i}/{len(all_article_urls)}: {article_url}")
+
+        if article_url in visited_article:
+            continue
+        visited_article.add(article_url)
+
+        html = fetch_html(session, article_url)
+        if not html:
+            failed_articles += 1
+            continue
+
+        soup = BeautifulSoup(html, "html.parser")
+        clean_soup(soup)
+        text = soup.get_text("\n", strip=True)
+
+        # AI抽出
+        items = ai_extract_events_from_text(client, model_name, text, today)
+
+        # 付帯情報＆重複除外
+        for item in items:
+            n = normalize_string(item.get("name", ""))
+            p = normalize_string(item.get("place", ""))
+
+            if not n:
+                continue
+
+            # CSV既知重複除外
+            if (n, p) in existing_fingerprints:
+                skipped_duplicate_csv += 1
+                continue
+
+            # 今回取得内の重複除外（ソース問わず）
+            fp = (n, p, normalize_string(item.get("date_info", ""))[:20])
+            # date_infoまで含めた軽い指紋（完全一致を避ける）
+            # ただし name/place が同じなら基本同一イベントとして扱いたい場合は date_infoを外してもOK
+            # ここでは「name+place」を最優先にする
+            fp2 = (n, p)
+
+            # すでに抽出済みか確認
+            exists = False
+            for d in extracted_all:
+                if (normalize_string(d.get("name","")), normalize_string(d.get("place",""))) == fp2:
+                    exists = True
+                    break
+            if exists:
+                skipped_duplicate_run += 1
+                continue
+
+            item["source_label"] = label
+            item["source_url"] = article_url
+            extracted_all.append(item)
+
+        time.sleep(sleep_sec)
 
     main_progress.empty()
 
-    if not all_data:
-        if skipped_count_duplicate_csv > 0:
-            st.warning(f"取得データは全てCSV内の既知情報でした。（除外: {skipped_count_duplicate_csv}件）")
-        else:
-            st.error("情報が見つかりませんでした。")
+    if not extracted_all:
+        status_box.warning(
+            f"抽出結果が0件でした。記事取得失敗: {failed_articles}件 / CSV除外: {skipped_duplicate_csv}件"
+        )
         st.session_state.extracted_data = None
-    else:
-        unique_data = []
-        seen = set()
-        for d in all_data:
-            key = (normalize_string(d['name']), normalize_string(d.get('place','')))
-            if key not in seen:
-                seen.add(key)
-                unique_data.append(d)
-        
-        st.session_state.extracted_data = unique_data
-        st.session_state.last_update = datetime.datetime.now().strftime("%H:%M:%S")
-        status_text.success(f"🎉 完了！ 新規 {len(unique_data)} 件 (CSV除外: {skipped_count_duplicate_csv}件)")
+        st.stop()
 
-# --- 結果表示 ---
+    st.session_state.extracted_data = extracted_all
+    st.session_state.last_update = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    status_box.success(
+        f"🎉 完了！新規 {len(extracted_all)} 件 / CSV除外: {skipped_duplicate_csv}件 / 今回重複除外: {skipped_duplicate_run}件 / 記事失敗: {failed_articles}件"
+    )
+
+# ============================================================
+# Result rendering
+# ============================================================
 if st.session_state.extracted_data:
     df = pd.DataFrame(st.session_state.extracted_data)
-    
-    st.markdown(f"**取得件数: {len(df)}**")
-    
-    # 表示用
+
+    st.markdown(f"**取得件数: {len(df)}**（更新: {st.session_state.last_update}）")
+
+    # 表示用リネーム
     display_df = df.rename(columns={
-        'date_info': '期間', 'name': 'イベント名', 
-        'place': '場所', 'description': '概要', 
-        'source_label': '情報源', 'source_url': 'URL'
+        "date_info": "期間",
+        "name": "イベント名",
+        "place": "場所",
+        "description": "概要",
+        "source_label": "情報源",
+        "source_url": "URL"
     })
-    
-    try:
-        display_df = display_df.sort_values('期間')
-    except: pass
-    
-    # 必要な列のみ抽出
-    cols = ['期间', 'イベント名', '場所', '概要', '情報源', 'URL']
-    # 実際に存在する列のみ使用
-    cols = [c for c in cols if c in display_df.columns]
+
+    # 列の存在を保証しつつ並べる
+    desired_cols = ["期間", "イベント名", "場所", "概要", "情報源", "URL"]
+    cols = [c for c in desired_cols if c in display_df.columns]
     display_df = display_df[cols]
+
+    # ソート（期間が空でも落ちないように）
+    if "期間" in display_df.columns:
+        try:
+            display_df = display_df.sort_values("期間", na_position="last")
+        except:
+            pass
 
     st.dataframe(
         display_df,
@@ -366,6 +584,6 @@ if st.session_state.extracted_data:
         },
         hide_index=True
     )
-    
-    csv = display_df.to_csv(index=False).encode('utf-8_sig')
-    st.download_button("📥 CSVダウンロード", csv, "events_full.csv", "text/csv")
+
+    csv_bytes = display_df.to_csv(index=False).encode("utf-8_sig")
+    st.download_button("📥 CSVダウンロード", csv_bytes, "events_full.csv", "text/csv")
