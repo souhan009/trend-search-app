@@ -16,7 +16,7 @@ import re
 st.set_page_config(page_title="トレンド・イベント検索", page_icon="📖", layout="wide")
 
 st.title("📖 イベント情報「完全救出」抽出アプリ")
-st.markdown("Webページを読み込み、**手持ちのCSVにない新しい情報のみ**を抽出します。カテゴリ指定対応版。")
+st.markdown("Webページを読み込み、**手持ちのCSVにない新しい情報のみ**を抽出します。エラー回避強化版。")
 
 # --- ユーティリティ関数 ---
 
@@ -40,21 +40,16 @@ def normalize_string(text):
 def safe_json_parse(json_str):
     """
     不完全なJSON文字列から、有効なオブジェクトのみを救出してパースする関数。
-    Geminiが途中で回答を打ち切った場合(Unterminated string)に対応。
     """
     json_str = json_str.replace("```json", "").replace("```", "").strip()
     
     try:
-        # まず普通にパースを試みる
         return json.loads(json_str)
     except json.JSONDecodeError:
-        # 失敗した場合（途中で切れている場合）
         try:
             last_brace_index = json_str.rfind("}")
             if last_brace_index == -1:
                 return [] 
-            
-            # 最後の '}' までを切り取り、リストの閉じ括弧 ']' を補完する
             repaired_json = json_str[:last_brace_index+1] + "]"
             return json.loads(repaired_json)
         except:
@@ -79,7 +74,6 @@ if 'last_update' not in st.session_state:
 with st.sidebar:
     st.header("1. 読み込み対象")
     
-    # 画像のURLリストを元にプリセットを再構築
     PRESET_URLS = {
         # PR TIMES
         "PRTIMES (グルメ)": "https://prtimes.jp/gourmet/",
@@ -105,7 +99,7 @@ with st.sidebar:
     )
 
     st.markdown("### 🔗 カスタムURL")
-    custom_urls_text = st.text_area("その他のURL (1行に1つ)", height=100, help="特定のカテゴリページURLを入力すると精度が上がります。")
+    custom_urls_text = st.text_area("その他のURL (1行に1つ)", height=100)
     
     st.markdown("---")
     st.markdown("### 2. 既存データ除外 (オプション)")
@@ -190,16 +184,17 @@ if st.button("一括読み込み開始", type="primary"):
             for tag in soup(["script", "style", "nav", "footer", "iframe", "header", "noscript", "form", "svg"]):
                 tag.decompose()
             
-            # クラス名除外 (sidebar, ranking等)
             exclude_keywords = ['sidebar', 'side-bar', 'ranking', 'recommend', 'widget', 'advertisement', 'pankuzu', 'breadcrumb']
             for tag in soup.find_all(attrs={"class": True}):
                 classes = tag.get("class")
+                # 【修正】tag.get("class")がNoneを返す可能性への対処（基本リストだが念の為）
+                if not classes: continue
                 if isinstance(classes, list): classes = " ".join(classes).lower()
                 if any(k in classes for k in exclude_keywords): tag.decompose()
             
             full_text = soup.get_text(separator="\n", strip=True)
             
-            # --- 分割処理 (Chunking) + 自動修復 ---
+            # --- 分割処理 ---
             chunks = list(split_text_into_chunks(full_text, chunk_size=30000, overlap=1000))
             
             chunk_results = []
@@ -211,10 +206,7 @@ if st.button("一括読み込み開始", type="primary"):
                 prompt = f"""
                 あなたはデータ抽出の専門家です。
                 以下のテキスト（Webページの断片）から、含まれる「全ての」記事・イベント情報をJSONリストで抽出してください。
-                
-                【重要: エラー回避のため】
-                リストがあまりに長くなると出力が切れてしまうため、**テキスト内で見つかった順に最大30件まで**抽出して出力してください。
-                （次の断片で続きを処理するので、無理に全部詰め込まなくて大丈夫です）
+                **エラー防止のため、テキスト内で見つかった順に最大30件まで抽出してください。**
 
                 【前提情報】
                 ・本日の日付: {today.strftime('%Y年%m月%d日')}
@@ -246,7 +238,6 @@ if st.button("一括読み込み開始", type="primary"):
                         )
                     )
                     
-                    # 自動修復パース
                     extracted = safe_json_parse(ai_response.text)
                     if isinstance(extracted, list):
                         chunk_results.extend(extracted)
@@ -259,10 +250,14 @@ if st.button("一括読み込み開始", type="primary"):
 
             chunk_progress.empty()
 
-            # --- 結果の統合と重複チェック ---
+            # --- 結果統合 ---
             seen_in_page = set()
             
             for item in chunk_results:
+                # 【修正】itemがNoneでないこと、辞書型であることを確認
+                if not item or not isinstance(item, dict):
+                    continue
+
                 n_key = normalize_string(item.get('name', ''))
                 if not n_key or n_key in seen_in_page:
                     continue
