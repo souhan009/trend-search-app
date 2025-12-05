@@ -51,7 +51,7 @@ if 'last_update' not in st.session_state:
 with st.sidebar:
     st.header("1. 読み込み対象")
     
-    # 修正: PRTIMESのみに変更
+    # プリセットはPRTIMESのみ
     PRESET_URLS = {
         "PRTIMES (最新プレスリリース)": "https://prtimes.jp/"
     }
@@ -62,8 +62,9 @@ with st.sidebar:
         default=["PRTIMES (最新プレスリリース)"]
     )
 
+    # カスタムURL入力をここに配置
     st.markdown("### 🔗 カスタムURL")
-    custom_urls_text = st.text_area("その他のURL (1行に1つ)", height=100)
+    custom_urls_text = st.text_area("その他のURL (1行に1つ)", height=100, help="https://www.atpress.ne.jp/ など、解析したい他のURLを入力してください。")
     
     st.markdown("---")
     st.markdown("### 2. 既存データ除外 (オプション)")
@@ -148,9 +149,13 @@ if st.button("一括読み込み開始", type="primary"):
                 continue
 
             soup = BeautifulSoup(response.text, "html.parser")
-            for script in soup(["script", "style", "nav", "footer", "iframe", "header"]):
+            
+            # 【修正】ノイズ除去の強化: script, styleに加え、フォームやナビゲーションの一部も除外
+            for script in soup(["script", "style", "nav", "footer", "iframe", "header", "noscript", "form"]):
                 script.decompose()
-            page_text = soup.get_text(separator="\n", strip=True)[:50000]
+            
+            # 【修正】読み込み上限を 50,000 -> 300,000 に拡大 (AtPress等の長いページ対応)
+            page_text = soup.get_text(separator="\n", strip=True)[:300000]
 
             prompt = f"""
             あなたはデータ抽出アシスタントです。
