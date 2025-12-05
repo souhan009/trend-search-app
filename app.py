@@ -16,7 +16,7 @@ import re
 st.set_page_config(page_title="トレンド・イベント検索", page_icon="📖", layout="wide")
 
 st.title("📖 イベント情報「完全救出」抽出アプリ")
-st.markdown("Webページを読み込み、**手持ちのCSVにない新しい情報のみ**を抽出します。エラー回避強化版。")
+st.markdown("Webページを読み込み、**手持ちのCSVにない新しい情報のみ**を抽出します。エラー対策強化版。")
 
 # --- ユーティリティ関数 ---
 
@@ -41,6 +41,7 @@ def safe_json_parse(json_str):
     """
     不完全なJSON文字列から、有効なオブジェクトのみを救出してパースする関数。
     """
+    if not json_str: return []
     json_str = json_str.replace("```json", "").replace("```", "").strip()
     
     try:
@@ -57,6 +58,7 @@ def safe_json_parse(json_str):
 
 def split_text_into_chunks(text, chunk_size=30000, overlap=1000):
     """テキストをオーバーラップ付きで分割するジェネレータ"""
+    if not text: return
     start = 0
     text_len = len(text)
     while start < text_len:
@@ -180,17 +182,35 @@ if st.button("一括読み込み開始", type="primary"):
 
             soup = BeautifulSoup(response.text, "html.parser")
             
-            # ノイズ除去
-            for tag in soup(["script", "style", "nav", "footer", "iframe", "header", "noscript", "form", "svg"]):
-                tag.decompose()
+            # 1. 基本的な不要タグ削除 (find_allでリスト化してから削除)
+            tags_to_remove = soup.find_all(["script", "style", "nav", "footer", "iframe", "header", "noscript", "form", "svg"])
+            for tag in tags_to_remove:
+                if tag: tag.decompose()
             
+            # 2. クラス名による不要エリア削除 (NoneTypeエラー対策)
             exclude_keywords = ['sidebar', 'side-bar', 'ranking', 'recommend', 'widget', 'advertisement', 'pankuzu', 'breadcrumb']
-            for tag in soup.find_all(attrs={"class": True}):
-                classes = tag.get("class")
-                # 【修正】tag.get("class")がNoneを返す可能性への対処（基本リストだが念の為）
+            
+            # find_allの結果をリスト化して固定
+            potential_noise_tags = list(soup.find_all(attrs={"class": True}))
+            
+            for tag in potential_noise_tags:
+                if tag is None: continue # 念の為のNoneチェック
+                
+                # 安全にクラス属性を取得
+                try:
+                    classes = tag.get("class")
+                except AttributeError:
+                    continue
+                
                 if not classes: continue
-                if isinstance(classes, list): classes = " ".join(classes).lower()
-                if any(k in classes for k in exclude_keywords): tag.decompose()
+                
+                if isinstance(classes, list):
+                    classes_str = " ".join(classes).lower()
+                else:
+                    classes_str = str(classes).lower()
+                
+                if any(k in classes_str for k in exclude_keywords):
+                    tag.decompose()
             
             full_text = soup.get_text(separator="\n", strip=True)
             
@@ -201,6 +221,7 @@ if st.button("一括読み込み開始", type="primary"):
             chunk_progress = st.progress(0)
             
             for cid, chunk_text in enumerate(chunks):
+                if not chunk_text: continue
                 chunk_progress.progress((cid + 1) / len(chunks))
                 
                 prompt = f"""
@@ -254,16 +275,18 @@ if st.button("一括読み込み開始", type="primary"):
             seen_in_page = set()
             
             for item in chunk_results:
-                # 【修正】itemがNoneでないこと、辞書型であることを確認
-                if not item or not isinstance(item, dict):
+                # 【重要】itemが正当な辞書か徹底チェック (AttributeError防止)
+                if item is None or not isinstance(item, dict):
                     continue
 
+                # .getを使う際は辞書であることが確定しているので安全
                 n_key = normalize_string(item.get('name', ''))
                 if not n_key or n_key in seen_in_page:
                     continue
                 seen_in_page.add(n_key)
 
                 p_key = normalize_string(item.get('place', ''))
+                
                 is_in_csv = False
                 if (n_key, p_key) in existing_fingerprints:
                     is_in_csv = True
