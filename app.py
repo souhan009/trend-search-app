@@ -5,7 +5,6 @@ from google.genai import types
 import os
 import json
 import pandas as pd
-import pydeck as pdk
 import requests
 from bs4 import BeautifulSoup
 import time
@@ -59,8 +58,6 @@ def safe_json_parse(json_str):
 def split_text_into_chunks(text, chunk_size=8000, overlap=500):
     """
     テキストを分割するジェネレータ。
-    【変更点】デフォルトサイズを小さく(30000->8000)して、
-    AIが回答しきれるサイズに調整。
     """
     if not text: return
     start = 0
@@ -213,8 +210,6 @@ if st.button("一括読み込み開始", type="primary"):
             full_text = soup.get_text(separator="\n", strip=True)
             
             # --- 分割処理 (小分けにして全件取得) ---
-            # chunk_sizeを8000まで小さくすることで、各チャンク内の情報を「全て」出力しても
-            # 生成トークン数制限に引っかからないようにする戦略
             chunks = list(split_text_into_chunks(full_text, chunk_size=8000, overlap=500))
             
             chunk_results = []
@@ -245,9 +240,7 @@ if st.button("一括読み込み開始", type="primary"):
                         "name": "イベント名または記事タイトル",
                         "place": "場所(なければ空欄)",
                         "date_info": "日付(YYYY年MM月DD日)",
-                        "description": "概要(1行)",
-                        "lat": 0.0,
-                        "lon": 0.0
+                        "description": "概要(1行)"
                     }}
                 ]
                 """
@@ -345,34 +338,7 @@ if st.session_state.extracted_data is not None:
 
     st.markdown(f"**最終更新: {st.session_state.last_update}** ({len(data)}件)")
 
-    # 1. マップ表示
-    st.subheader("📍 イベントマップ (新規のみ)")
-    if not df.empty and 'lat' in df.columns and 'lon' in df.columns:
-        map_df = df.dropna(subset=['lat', 'lon'])
-        if not map_df.empty:
-            view_state = pdk.ViewState(
-                latitude=map_df['lat'].mean(),
-                longitude=map_df['lon'].mean(),
-                zoom=11,
-                pitch=0,
-            )
-            layer = pdk.Layer(
-                "ScatterplotLayer",
-                map_df,
-                get_position='[lon, lat]',
-                get_color='[255, 75, 75, 160]',
-                get_radius=300,
-                pickable=True,
-            )
-            st.pydeck_chart(pdk.Deck(
-                map_style='https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json',
-                initial_view_state=view_state,
-                layers=[layer],
-                tooltip={"html": "<b>{name}</b><br/>{place}<br/><i>{date_info}</i>"}
-            ))
-
-    # 2. テーブル表示
-    st.markdown("---")
+    # 1. テーブル表示
     st.subheader("📋 新規イベント一覧")
 
     display_cols = ['date_info', 'name', 'place', 'description', 'source_label', 'source_url']
@@ -400,7 +366,7 @@ if st.session_state.extracted_data is not None:
         hide_index=True
     )
 
-    # 3. CSVダウンロード
+    # 2. CSVダウンロード
     csv = display_df.to_csv(index=False).encode('utf-8_sig')
     st.download_button(
         label="📥 新規分CSVをダウンロード",
