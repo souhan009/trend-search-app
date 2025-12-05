@@ -4,3 +4,4 @@ pandas
 pydeck
 beautifulsoup4
 requests
+selenium
