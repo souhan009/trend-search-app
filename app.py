@@ -15,8 +15,8 @@ import re
 # ページの設定
 st.set_page_config(page_title="トレンド・イベント検索", page_icon="📖", layout="wide")
 
-st.title("📖 イベント情報「完全救出」抽出アプリ")
-st.markdown("Webページを読み込み、**手持ちのCSVにない新しい情報のみ**を抽出します。エラー対策強化版。")
+st.title("📖 イベント情報「全件網羅」抽出アプリ")
+st.markdown("Webページを細かく分割して読み込み、**ページ内の情報を端から端まで全て**抽出します。")
 
 # --- ユーティリティ関数 ---
 
@@ -56,8 +56,12 @@ def safe_json_parse(json_str):
         except:
             return []
 
-def split_text_into_chunks(text, chunk_size=30000, overlap=1000):
-    """テキストをオーバーラップ付きで分割するジェネレータ"""
+def split_text_into_chunks(text, chunk_size=8000, overlap=500):
+    """
+    テキストを分割するジェネレータ。
+    【変更点】デフォルトサイズを小さく(30000->8000)して、
+    AIが回答しきれるサイズに調整。
+    """
     if not text: return
     start = 0
     text_len = len(text)
@@ -182,26 +186,20 @@ if st.button("一括読み込み開始", type="primary"):
 
             soup = BeautifulSoup(response.text, "html.parser")
             
-            # 1. 基本的な不要タグ削除 (find_allでリスト化してから削除)
+            # 不要タグ削除
             tags_to_remove = soup.find_all(["script", "style", "nav", "footer", "iframe", "header", "noscript", "form", "svg"])
             for tag in tags_to_remove:
                 if tag: tag.decompose()
             
-            # 2. クラス名による不要エリア削除 (NoneTypeエラー対策)
+            # クラス名による不要エリア削除
             exclude_keywords = ['sidebar', 'side-bar', 'ranking', 'recommend', 'widget', 'advertisement', 'pankuzu', 'breadcrumb']
-            
-            # find_allの結果をリスト化して固定
             potential_noise_tags = list(soup.find_all(attrs={"class": True}))
-            
             for tag in potential_noise_tags:
-                if tag is None: continue # 念の為のNoneチェック
-                
-                # 安全にクラス属性を取得
+                if tag is None: continue
                 try:
                     classes = tag.get("class")
                 except AttributeError:
                     continue
-                
                 if not classes: continue
                 
                 if isinstance(classes, list):
@@ -214,8 +212,10 @@ if st.button("一括読み込み開始", type="primary"):
             
             full_text = soup.get_text(separator="\n", strip=True)
             
-            # --- 分割処理 ---
-            chunks = list(split_text_into_chunks(full_text, chunk_size=30000, overlap=1000))
+            # --- 分割処理 (小分けにして全件取得) ---
+            # chunk_sizeを8000まで小さくすることで、各チャンク内の情報を「全て」出力しても
+            # 生成トークン数制限に引っかからないようにする戦略
+            chunks = list(split_text_into_chunks(full_text, chunk_size=8000, overlap=500))
             
             chunk_results = []
             chunk_progress = st.progress(0)
@@ -226,8 +226,11 @@ if st.button("一括読み込み開始", type="primary"):
                 
                 prompt = f"""
                 あなたはデータ抽出の専門家です。
-                以下のテキスト（Webページの断片）から、含まれる「全ての」記事・イベント情報をJSONリストで抽出してください。
-                **エラー防止のため、テキスト内で見つかった順に最大30件まで抽出してください。**
+                以下のテキスト（Webページの断片）から、含まれる**全ての**記事・イベント情報をJSONリストで抽出してください。
+
+                【重要指示】
+                ・**省略厳禁です。** テキスト内にある情報は、どんなに数が多くても全てリストアップしてください。
+                ・前のチャンクと内容が被っていても構いません（後でプログラムが重複削除します）。
 
                 【前提情報】
                 ・本日の日付: {today.strftime('%Y年%m月%d日')}
@@ -275,11 +278,9 @@ if st.button("一括読み込み開始", type="primary"):
             seen_in_page = set()
             
             for item in chunk_results:
-                # 【重要】itemが正当な辞書か徹底チェック (AttributeError防止)
                 if item is None or not isinstance(item, dict):
                     continue
 
-                # .getを使う際は辞書であることが確定しているので安全
                 n_key = normalize_string(item.get('name', ''))
                 if not n_key or n_key in seen_in_page:
                     continue
