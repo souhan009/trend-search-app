@@ -825,7 +825,6 @@ if st.button("一括読み込み開始", type="primary"):
         f"- 記事失敗: {failed_articles}件\n"
         f"- Geminiエラー: {gemini_error_counter.get('count', 0)}件"
     )
-
 # ============================================================
 # Result rendering
 # ============================================================
@@ -850,6 +849,14 @@ if st.session_state.extracted_data:
     desired_cols = ["リリース日", "期間", "イベント名", "場所", "住所", "緯度", "経度", "概要", "情報源", "URL"]
     cols = [c for c in desired_cols if c in display_df.columns]
     display_df = display_df[cols]
+
+    # ▼▼▼ 追加機能：ゴミ掃除（「空文字」や「不明」を本当の空欄にする） ▼▼▼
+    # AIが文字通り「空文字」と書いてしまったり、「不明」と入れたりするのを消去
+    rubbish_words = ["空文字", "不明", "None", "null", "N/A", "未定"]
+    for col in display_df.columns:
+        # 文字列型の列に対して置換を実行
+        display_df[col] = display_df[col].replace(rubbish_words, "")
+    # ▲▲▲ 追加終了 ▲▲▲
 
     if "期間" in display_df.columns:
         try:
