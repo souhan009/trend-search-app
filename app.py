@@ -19,13 +19,12 @@ from google.genai import types
 # ============================================================
 # Streamlit config
 # ============================================================
-st.set_page_config(page_title="イベント情報「全件網羅」抽出アプリ（完全版）", page_icon="📖", layout="wide")
-st.title("📖 イベント情報「全件網羅」抽出アプリ（完全版）")
+st.set_page_config(page_title="イベント情報「全件網羅」抽出アプリ（決定版）", page_icon="📖", layout="wide")
+st.title("📖 イベント情報「全件網羅」抽出アプリ（決定版）")
 st.markdown("""
-**AI × スマートクローリング（完全版）**  
-一覧ページから **記事URLのみを厳密に抽出** → 記事本文を **ノイズ除去してAI抽出** → 重複除外して一覧化します。  
-**追加機能:** 記事の **リリース日（公開日）**、イベントの **住所 / 緯度 / 経度（取れたら）** を収集します。  
-**追加（重要）:** Geminiエラーを **握りつぶさず表示** し、原因切り分けできるようにしました。
+**AI × スマートクローリング（決定版）** 一覧ページから記事URLを厳密に抽出 → 本文をAI解析 → 重複除外して一覧化。  
+**新機能:** 1. **自動リトライ**: API制限(429)がかかっても自動で待機して再開します。  
+2. **モデル診断**: サイドバー下部で、あなたの環境で使える正確なモデル名を確認できます。
 """)
 
 # ============================================================
@@ -74,8 +73,7 @@ def normalize_date(text: str) -> str:
     if not text or not isinstance(text, str):
         return ""
     t = text.strip()
-
-    # ISOっぽい場合（2025-01-02T...）は日付部分だけ拾う
+    # ISO format check
     m = re.search(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", t)
     if m:
         y, mo, d = m.group(1), m.group(2).zfill(2), m.group(3).zfill(2)
@@ -87,8 +85,7 @@ def normalize_date(text: str) -> str:
         return f"{m2.group(1)}年{m2.group(2).zfill(2)}月{m2.group(3).zfill(2)}日"
 
     t = re.sub(r"(\d{4})年(\d{1,2})月(\d{1,2})日", rep_ymd, t)
-    t = re.sub(r"(\d{4})/(\d{1,2})/(\d{1,2})",
-               lambda m2: f"{m2.group(1)}/{m2.group(2).zfill(2)}/{m2.group(3).zfill(2)}", t)
+    t = re.sub(r"(\d{4})/(\d{1,2})/(\d{1,2})", lambda m2: f"{m2.group(1)}/{m2.group(2).zfill(2)}/{m2.group(3).zfill(2)}", t)
     return t.strip()
 
 def normalize_string(text) -> str:
@@ -164,21 +161,17 @@ def clean_soup(soup: BeautifulSoup) -> None:
             t.decompose()
         except Exception:
             pass
-
     exclude_tokens = ["sidebar", "ranking", "recommend", "widget", "ad", "bread", "breadcrumb", "banner"]
-
     for t in soup.find_all(True):
         if not isinstance(t, Tag):
             continue
         attrs = getattr(t, "attrs", None)
         if not isinstance(attrs, dict):
             continue
-
         cls_list = attrs.get("class") or []
         if not isinstance(cls_list, (list, tuple)):
             cls_list = [str(cls_list)]
         cls = " ".join(map(str, cls_list)).lower()
-
         if any(tok in cls for tok in exclude_tokens):
             try:
                 t.decompose()
@@ -212,13 +205,11 @@ def find_next_page_url(soup: BeautifulSoup, current_url: str, rule: Optional[Sit
         joined = urllib.parse.urljoin(current_url, link_next["href"])
         if same_domain(joined, current_url):
             return joined
-
     a_next = soup.find("a", rel=lambda v: v and "next" in str(v).lower(), href=True)
     if a_next and is_valid_href(a_next["href"]):
         joined = urllib.parse.urljoin(current_url, a_next["href"])
         if same_domain(joined, current_url):
             return joined
-
     tokens = rule.listing_next_hint_tokens if rule else ("次へ", "次の", "もっと見る", "Next", "More")
     for a in soup.find_all("a", href=True):
         try:
@@ -239,10 +230,8 @@ def is_article_url(url: str, rule: Optional[SiteRule]) -> bool:
     pu = urllib.parse.urlparse(url)
     path = pu.path or ""
     low = path.lower()
-
     if any(low.startswith(p) for p in rule.deny_path_prefixes):
         return False
-
     return bool(rule.article_path_allow.search(path))
 
 def extract_article_links_from_listing(
@@ -254,26 +243,21 @@ def extract_article_links_from_listing(
     base = urllib.parse.urlparse(current_url)
     out: List[str] = []
     seen: Set[str] = set()
-
     for a in soup.find_all("a", href=True):
         href = a.get("href")
         if not is_valid_href(href):
             continue
         url = urllib.parse.urljoin(current_url, href)
         pu = urllib.parse.urlparse(url)
-
         if pu.netloc != base.netloc:
             continue
-
         if not is_article_url(url, rule):
             continue
-
         if url not in seen:
             seen.add(url)
             out.append(url)
         if len(out) >= link_limit:
             break
-
     return out
 
 # ------------------------------------------------------------
@@ -294,7 +278,6 @@ def extract_release_date(soup: BeautifulSoup) -> str:
         m = soup.find(tag_name, attrs=attrs)
         if m and m.get("content"):
             return normalize_date(str(m["content"]))
-
     t = soup.find("time")
     if t:
         dt = t.get("datetime")
@@ -303,7 +286,6 @@ def extract_release_date(soup: BeautifulSoup) -> str:
         txt = t.get_text(strip=True)
         if txt:
             return normalize_date(txt)
-
     return ""
 
 def _as_list(x: Any) -> List[Any]:
@@ -313,7 +295,6 @@ def _as_list(x: Any) -> List[Any]:
 
 def extract_location_from_jsonld(soup: BeautifulSoup) -> Dict[str, str]:
     out = {"address": "", "latitude": "", "longitude": ""}
-
     for sc in soup.find_all("script", attrs={"type": "application/ld+json"}):
         try:
             raw = sc.string or sc.get_text(strip=True)
@@ -322,23 +303,19 @@ def extract_location_from_jsonld(soup: BeautifulSoup) -> Dict[str, str]:
             obj = json.loads(raw)
         except Exception:
             continue
-
         nodes: List[Any] = []
         for node in _as_list(obj):
             if isinstance(node, dict) and "@graph" in node:
                 nodes.extend(_as_list(node.get("@graph")))
             else:
                 nodes.append(node)
-
         for n in nodes:
             if not isinstance(n, dict):
                 continue
-
             loc = n.get("location") or n.get("Place") or n.get("place")
             for loc_node in _as_list(loc):
                 if not isinstance(loc_node, dict):
                     continue
-
                 addr = loc_node.get("address")
                 if isinstance(addr, dict):
                     parts = [
@@ -353,7 +330,6 @@ def extract_location_from_jsonld(soup: BeautifulSoup) -> Dict[str, str]:
                         out["address"] = addr_text
                 elif isinstance(addr, str) and addr.strip() and not out["address"]:
                     out["address"] = addr.strip()
-
                 geo = loc_node.get("geo")
                 if isinstance(geo, dict):
                     lat = geo.get("latitude")
@@ -362,7 +338,6 @@ def extract_location_from_jsonld(soup: BeautifulSoup) -> Dict[str, str]:
                         out["latitude"] = str(lat).strip()
                     if lon is not None and not out["longitude"]:
                         out["longitude"] = str(lon).strip()
-
             addr2 = n.get("address")
             if isinstance(addr2, dict) and not out["address"]:
                 parts = [
@@ -374,7 +349,6 @@ def extract_location_from_jsonld(soup: BeautifulSoup) -> Dict[str, str]:
                 addr_text = "".join([p for p in parts if isinstance(p, str) and p.strip()])
                 if addr_text:
                     out["address"] = addr_text
-
             geo2 = n.get("geo")
             if isinstance(geo2, dict):
                 lat = geo2.get("latitude")
@@ -383,14 +357,12 @@ def extract_location_from_jsonld(soup: BeautifulSoup) -> Dict[str, str]:
                     out["latitude"] = str(lat).strip()
                 if lon is not None and not out["longitude"]:
                     out["longitude"] = str(lon).strip()
-
             if out["address"] or out["latitude"] or out["longitude"]:
                 return out
-
     return out
 
 # ------------------------------------------------------------
-# Gemini extraction (NEW: error display / counters)
+# Gemini extraction (RETRY LOGIC ADDED)
 # ------------------------------------------------------------
 def ai_extract_events_from_text(
     client: genai.Client,
@@ -403,7 +375,8 @@ def ai_extract_events_from_text(
     min_chunk_len: int = 120,
 ) -> List[Dict]:
     all_items: List[Dict] = []
-
+    
+    # チャンクごとに処理
     for chunk in split_text_into_chunks(text, chunk_size=8000, overlap=400):
         if not chunk or len(chunk) < min_chunk_len:
             continue
@@ -435,47 +408,69 @@ def ai_extract_events_from_text(
 本文:
 {chunk}
 """
-        try:
-            res = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=float(temperature)
+        # ========================================================
+        # リトライロジック (Max 3回)
+        # ========================================================
+        max_retries = 3
+        for attempt in range(max_retries + 1):
+            try:
+                res = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        temperature=float(temperature)
+                    )
                 )
-            )
 
-            if debug_mode:
-                st.write("🧪 Gemini raw (先頭400文字):", (res.text or "")[:400])
+                if debug_mode:
+                    st.write("🧪 Gemini raw (head 400):", (res.text or "")[:400])
 
-            extracted = safe_json_parse(res.text)
-            if isinstance(extracted, list):
-                for item in extracted:
-                    if not item or not isinstance(item, dict):
+                extracted = safe_json_parse(res.text)
+                if isinstance(extracted, list):
+                    for item in extracted:
+                        if not item or not isinstance(item, dict):
+                            continue
+                        name = str(item.get("name") or "").strip()
+                        if not name:
+                            continue
+                        out = {
+                            "name": name,
+                            "place": str(item.get("place") or "").strip(),
+                            "address": str(item.get("address") or "").strip(),
+                            "latitude": str(item.get("latitude") or "").strip(),
+                            "longitude": str(item.get("longitude") or "").strip(),
+                            "date_info": normalize_date(str(item.get("date_info") or "").strip()),
+                            "description": str(item.get("description") or "").strip(),
+                        }
+                        all_items.append(out)
+                
+                # 成功したらループを抜ける
+                break 
+
+            except Exception as e:
+                # 429エラー (Resource Exhausted) の場合のみ待機して再開
+                err_str = str(e)
+                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                    if attempt < max_retries:
+                        wait_time = 10 * (attempt + 1) # 10s, 20s, 30s
+                        if debug_mode:
+                            st.warning(f"⚠️ 429 Detected. Retrying in {wait_time}s... ({attempt + 1}/{max_retries})")
+                        time.sleep(wait_time)
                         continue
-                    name = str(item.get("name") or "").strip()
-                    if not name:
-                        continue
-                    out = {
-                        "name": name,
-                        "place": str(item.get("place") or "").strip(),
-                        "address": str(item.get("address") or "").strip(),
-                        "latitude": str(item.get("latitude") or "").strip(),
-                        "longitude": str(item.get("longitude") or "").strip(),
-                        "date_info": normalize_date(str(item.get("date_info") or "").strip()),
-                        "description": str(item.get("description") or "").strip(),
-                    }
-                    all_items.append(out)
-
-        except Exception as e:
-            # NEW: エラーを握りつぶさず、デバッグ時は表示。常に回数を集計。
-            gemini_error_counter["count"] = gemini_error_counter.get("count", 0) + 1
-            if debug_mode:
-                st.error(f"❌ Geminiエラー: {e}")
-            # デバッグでなくても、1行だけは表示して気づけるようにする
-            else:
-                st.warning(f"❌ Gemini呼び出しエラー（詳細はデバッグモードで表示）: {type(e).__name__}")
-            continue
+                    else:
+                        gemini_error_counter["count"] = gemini_error_counter.get("count", 0) + 1
+                        if debug_mode:
+                            st.error(f"❌ Retry Limit Reached: {e}")
+                else:
+                    # その他のエラーは即時記録して次へ
+                    gemini_error_counter["count"] = gemini_error_counter.get("count", 0) + 1
+                    if debug_mode:
+                        st.error(f"❌ Gemini Error: {e}")
+                    else:
+                        # 404等の場合、ユーザーに気づかせる
+                        st.warning(f"❌ Gemini Error: {e} (Check Model Name!)")
+                    break
 
     return all_items
 
@@ -510,25 +505,25 @@ with st.sidebar:
 
     st.divider()
     st.header("3. Gemini設定")
-    model_name = st.text_input("モデル名", value="gemini-2.0-flash")
+    # デフォルトを安定版に戻しつつ、ユーザーが変更可能にする
+    model_name = st.text_input("モデル名", value="gemini-1.5-flash")
     temperature = st.slider("temperature（0推奨）", 0.0, 1.0, 0.0, step=0.1)
 
     st.divider()
     st.header("🐞 デバッグ")
-    debug_mode = st.checkbox("デバッグモード（Gemini raw/本文先頭を表示）", value=False)
+    debug_mode = st.checkbox("デバッグモード（詳細ログ表示）", value=False)
     debug_show_articles = st.slider("デバッグ表示する記事数", 1, 10, 3)
 
     st.divider()
     st.header("4. 既存CSVによる重複除外")
     uploaded_file = st.file_uploader("過去CSV（重複除外用）", type="csv")
-
-# ...（前略：サイドバーのコードの続き）
-    st.header("4. 既存CSVによる重複除外")
-    uploaded_file = st.file_uploader("過去CSV（重複除外用）", type="csv")
-
-    # ▼▼▼▼▼ ここから追加 ▼▼▼▼▼
+    
+    # --------------------------------------------------------
+    # NEW: モデル名診断ツール (404対策)
+    # --------------------------------------------------------
     st.divider()
     st.header("🔍 モデル名診断")
+    st.caption("エラーが出る場合、ここを押して表示されるモデル名をコピーしてください。")
     if st.button("利用可能なモデル一覧を表示"):
         api_key_check = None
         try:
@@ -540,26 +535,24 @@ with st.sidebar:
             st.error("APIキーが見つかりません。")
         else:
             try:
-                # 一時的なクライアントを作成してモデル一覧を取得
                 tmp_client = genai.Client(api_key=api_key_check)
-                # v1beta等のバージョン指定が必要な場合があるため、明示的にリスト取得
+                # リスト取得
                 models_iter = tmp_client.models.list()
-                
                 valid_models = []
                 for m in models_iter:
-                    # コンテンツ生成（generateContent）に対応しているモデルのみ抽出
+                    # generateContentに対応しているか
                     methods = m.supported_generation_methods or []
                     if "generateContent" in methods:
-                        # "models/" という接頭辞がついていることが多いので、それを除去して表示
                         clean_name = m.name.replace("models/", "")
                         valid_models.append(clean_name)
                 
-                st.success("取得成功！以下のモデル名をコピペして試してください。")
-                st.code("\n".join(sorted(valid_models)), language="text")
-                
+                if valid_models:
+                    st.success("✅ 取得成功！以下の名前を「モデル名」欄に使ってください。")
+                    st.code("\n".join(sorted(valid_models)), language="text")
+                else:
+                    st.warning("モデルが見つかりませんでした。APIキーの権限を確認してください。")
             except Exception as e:
                 st.error(f"一覧取得エラー: {e}")
-    # ▲▲▲▲▲ ここまで追加 ▲▲▲▲▲
 
 # ============================================================
 # Load existing fingerprints
@@ -711,8 +704,8 @@ if st.button("一括読み込み開始", type="primary"):
     skipped_duplicate_run = 0
     failed_articles = 0
     non_article_skipped = 0
-    short_text_skipped = 0  # NEW
-    gemini_error_counter = {"count": 0}  # NEW
+    short_text_skipped = 0
+    gemini_error_counter = {"count": 0}
 
     for i, (article_url, label) in enumerate(collected, start=1):
         progress.progress(min(i / max(len(collected), 1), 1.0))
@@ -737,7 +730,6 @@ if st.button("一括読み込み開始", type="primary"):
         clean_soup(soup)
         text = extract_main_text(soup, rule)
 
-        # NEW: 本文が短すぎる場合は明示的にスキップとしてカウント
         if not text or len(text) < 200:
             short_text_skipped += 1
             if debug_mode and i <= debug_show_articles:
@@ -797,11 +789,10 @@ if st.button("一括読み込み開始", type="primary"):
 
     progress.empty()
 
-    # NEW: Geminiエラーがあったら目立つ警告
     if gemini_error_counter.get("count", 0) > 0:
         st.warning(
             f"⚠️ Gemini呼び出しでエラーが {gemini_error_counter['count']} 回発生しました。"
-            f"（モデル名/APIキー権限/請求/クォータ/レート制限の可能性。デバッグモードONで詳細表示）"
+            f"（モデル名/クォータ/APIキー権限の可能性。サイドバーの診断ツールも活用してください）"
         )
 
     if not extracted_all:
