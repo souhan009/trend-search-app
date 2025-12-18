@@ -519,11 +519,10 @@ with st.sidebar:
     uploaded_file = st.file_uploader("過去CSV（重複除外用）", type="csv")
     
     # --------------------------------------------------------
-    # NEW: モデル名診断ツール (404対策)
+    # NEW: モデル名診断ツール (修正版：シンプルモード)
     # --------------------------------------------------------
     st.divider()
     st.header("🔍 モデル名診断")
-    st.caption("エラーが出る場合、ここを押して表示されるモデル名をコピーしてください。")
     if st.button("利用可能なモデル一覧を表示"):
         api_key_check = None
         try:
@@ -538,19 +537,25 @@ with st.sidebar:
                 tmp_client = genai.Client(api_key=api_key_check)
                 # リスト取得
                 models_iter = tmp_client.models.list()
+                
                 valid_models = []
                 for m in models_iter:
-                    # generateContentに対応しているか
-                    methods = m.supported_generation_methods or []
-                    if "generateContent" in methods:
-                        clean_name = m.name.replace("models/", "")
+                    # 属性チェックを厳密にせず、nameがあれば取得する
+                    # 新SDKではオブジェクト構造が異なるため getattr で安全策をとる
+                    raw_name = getattr(m, "name", str(m))
+                    
+                    # "models/" を削除して見やすくする
+                    clean_name = raw_name.replace("models/", "")
+                    
+                    # Gemini系かつVision/Content生成できそうなものだけ残す簡易フィルタ
+                    if "gemini" in clean_name.lower():
                         valid_models.append(clean_name)
                 
                 if valid_models:
-                    st.success("✅ 取得成功！以下の名前を「モデル名」欄に使ってください。")
+                    st.success("✅ 取得成功！以下の名前を試してください")
                     st.code("\n".join(sorted(valid_models)), language="text")
                 else:
-                    st.warning("モデルが見つかりませんでした。APIキーの権限を確認してください。")
+                    st.warning("モデルが見つかりませんでした。")
             except Exception as e:
                 st.error(f"一覧取得エラー: {e}")
 
