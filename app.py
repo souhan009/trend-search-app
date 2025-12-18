@@ -379,13 +379,12 @@ def ai_extract_events_batch(
                 extracted_results = parsed
                 break # 成功
             else:
-                # JSONパース失敗時は再トライせず次へ（形式エラーはリトライしても直らないことが多い）
                 break
                 
         except Exception as e:
             if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
                 if attempt < max_retries:
-                    wait_time = 20 * (attempt + 1) # バッチなので少し長めに待つ
+                    wait_time = 20 * (attempt + 1)
                     if debug_mode:
                         st.warning(f"⚠️ 429 Detected in Batch. Retrying in {wait_time}s...")
                     time.sleep(wait_time)
@@ -454,7 +453,6 @@ with st.sidebar:
 
     st.divider()
     st.header("2. 探索設定")
-    # バッチサイズ追加
     batch_size = st.slider("バッチサイズ（1回に送る記事数）", 1, 20, 5)
     max_pages = st.slider("一覧の最大ページ数", 1, 30, 6)
     link_limit_per_page = st.slider("1ページあたり収集URL上限", 10, 300, 80)
@@ -501,6 +499,10 @@ if uploaded_file:
 if "extracted_data" not in st.session_state: st.session_state.extracted_data = None
 
 if st.button("🚀 一括読み込み開始 (バッチ処理)", type="primary"):
+    # ▼▼▼ 修正: ここに today の定義を追加しました ▼▼▼
+    today = datetime.date.today()
+    # ▲▲▲ 修正完了 ▲▲▲
+
     api_key = os.environ.get("GOOGLE_API_KEY") or st.secrets.get("GOOGLE_API_KEY")
     if not api_key:
         st.error("API Key未設定")
@@ -546,7 +548,7 @@ if st.button("🚀 一括読み込み開始 (バッチ処理)", type="primary"):
             if len(collected) >= max_articles_total: break
             curr = find_next_page_url(soup, curr, rule)
             if not curr: break
-            time.sleep(1.0) # HTML取得は優しく1秒待機
+            time.sleep(1.0)
         if len(collected) >= max_articles_total: break
             
     collected = collected[:max_articles_total]
@@ -557,14 +559,13 @@ if st.button("🚀 一括読み込み開始 (バッチ処理)", type="primary"):
     run_fingerprints = set()
     gemini_error_counter = {"count": 0}
     
-    batch_buffer = [] # AIに送るための待機リスト
+    batch_buffer = [] 
     
     status.info(f"🧠 記事解析開始: {len(collected)}件 (バッチサイズ: {batch_size})")
     
     for i, (url, label) in enumerate(collected):
         progress.progress((i+1) / len(collected))
         
-        # HTML取得 & 前処理
         rule = get_site_rule(url)
         if not is_article_url(url, rule): continue
         html = fetch_html(session, url)
@@ -578,7 +579,6 @@ if st.button("🚀 一括読み込み開始 (バッチ処理)", type="primary"):
         
         if not text or len(text) < 200: continue
         
-        # バッファに追加
         batch_buffer.append({
             "text": text,
             "url": url,
@@ -587,7 +587,6 @@ if st.button("🚀 一括読み込み開始 (バッチ処理)", type="primary"):
             "loc": loc
         })
         
-        # バッファがいっぱい or 最後ならAI送信
         if len(batch_buffer) >= batch_size or i == len(collected) - 1:
             status.info(f"🤖 AI解析中... ({len(batch_buffer)}件まとめて送信) Total: {len(extracted_all)}")
             
@@ -596,15 +595,14 @@ if st.button("🚀 一括読み込み開始 (バッチ処理)", type="primary"):
                 batch_buffer, today, debug_mode, gemini_error_counter
             )
             
-            # 重複除外しながら保存
             for item in batch_results:
                 fp = normalize_string(item["name"])
                 if fp in existing_fingerprints or fp in run_fingerprints: continue
                 run_fingerprints.add(fp)
                 extracted_all.append(item)
             
-            batch_buffer = [] # クリア
-            time.sleep(sleep_sec) # ここでしっかり待機
+            batch_buffer = []
+            time.sleep(sleep_sec)
             
     st.session_state.extracted_data = extracted_all
     st.session_state.last_update = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -613,7 +611,6 @@ if st.button("🚀 一括読み込み開始 (バッチ処理)", type="primary"):
 if st.session_state.extracted_data:
     df = pd.DataFrame(st.session_state.extracted_data)
     
-    # Cleaning
     rubbish = ["空文字", "不明", "None", "null", "N/A", "未定"]
     for c in df.columns:
         df[c] = df[c].replace(rubbish, "")
