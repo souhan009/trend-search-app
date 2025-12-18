@@ -22,8 +22,8 @@ from google.genai import types
 st.set_page_config(page_title="イベント情報「全件網羅」抽出アプリ（完全版）", page_icon="📖", layout="wide")
 st.title("📖 イベント情報「全件網羅」抽出アプリ（完全版）")
 st.markdown("""
-**AI × スマートクローリング（完全版）** 一覧ページから **記事URLのみを厳密に抽出** → 記事本文を **ノイズ除去してAI抽出** → 重複除外して一覧化します。  
-※「記事公開日」と「開催場所」の取得を強化しました。
+**AI × スマートクローリング（完全版）**  
+一覧ページから **記事URLのみを厳密に抽出** → 記事本文を **ノイズ除去してAI抽出** → 重複除外して一覧化します。
 """)
 
 # ============================================================
@@ -284,25 +284,22 @@ def ai_extract_events_from_text(
         if not chunk or len(chunk) < 120:
             continue
 
-        # プロンプト：記事公開日と場所の詳細取得を追加
         prompt = f"""
 以下のWebページ本文から、イベント・ニュース情報をJSON配列で漏れなく抽出してください。
 【現在日付: {today}】
 
 [抽出ルール]
-- 本文に含まれるイベント（展示、催事、キャンペーン、募集、発表会、セミナー等）情報を可能な限り抽出。
+- 本文に含まれるイベント（展示、催事、キャンペーン、募集、発表会、セミナー等）や、日時・期間・場所が書かれている情報を可能な限り抽出。
 - 省略厳禁。ただし「企業フッタ・問い合わせ先テンプレ」などの非イベント定型文は無理に拾わない。
-- date_info (イベント開催日) は、可能なら YYYY年MM月DD日 / 期間表現（例: 2025年01月01日〜2025年02月01日）。
-- published_at (記事公開日) は、記事の冒頭や末尾にある「ニュースの配信日」を抽出。
+- date_info は本文の表記のままでも良いが、可能なら YYYY年MM月DD日 / YYYY/MM/DD / 期間表現（例: 2025年01月01日〜2025年02月01日）。
 - 出力は必ずJSONのみ（説明文は禁止）。
 
 [JSON形式]
 [
   {{
     "name": "タイトル",
-    "published_at": "記事公開日（例: 2024年12月18日）。不明なら空文字",
-    "place": "開催場所・施設名・詳細な住所（オンラインなら「オンライン」）。不明なら空文字",
-    "date_info": "イベント開催期間・日時（不明なら空文字）",
+    "place": "場所（不明なら空文字）",
+    "date_info": "日付や期間（不明なら空文字）",
     "description": "概要（短めに）"
   }}
 ]
@@ -329,7 +326,6 @@ def ai_extract_events_from_text(
                         continue
                     out = {
                         "name": name,
-                        "published_at": normalize_date(str(item.get("published_at") or "").strip()),
                         "place": str(item.get("place") or "").strip(),
                         "date_info": normalize_date(str(item.get("date_info") or "").strip()),
                         "description": str(item.get("description") or "").strip(),
@@ -386,7 +382,7 @@ if uploaded_file is not None:
     try:
         existing_df = pd.read_csv(uploaded_file)
         name_col = next((c for c in existing_df.columns if "イベント名" in c or c.lower() in ["name", "title"]), None)
-        place_col = next((c for c in existing_df.columns if "開催場所" in c or "場所" in c or c.lower() in ["place", "location"]), None)
+        place_col = next((c for c in existing_df.columns if "場所" in c or c.lower() in ["place", "location"]), None)
 
         if name_col:
             for _, row in existing_df.iterrows():
@@ -617,26 +613,22 @@ if st.session_state.extracted_data:
 
     st.markdown(f"**取得件数: {len(df)}**（更新: {st.session_state.last_update}）")
 
-    # カラム名のマッピング（新項目対応）
     display_df = df.rename(columns={
-        "published_at": "記事公開日",
-        "date_info": "開催期間",
+        "date_info": "期間",
         "name": "イベント名",
-        "place": "開催場所",
+        "place": "場所",
         "description": "概要",
         "source_label": "情報源",
         "source_url": "URL"
     })
 
-    # 表示したい順にカラムを並べる
-    desired_cols = ["記事公開日", "開催期間", "イベント名", "開催場所", "概要", "情報源", "URL"]
+    desired_cols = ["期間", "イベント名", "場所", "概要", "情報源", "URL"]
     cols = [c for c in desired_cols if c in display_df.columns]
     display_df = display_df[cols]
 
-    # ソート（記事公開日が新しい順 → 開催期間順）
-    if "記事公開日" in display_df.columns:
+    if "期間" in display_df.columns:
         try:
-            display_df = display_df.sort_values(by=["記事公開日"], ascending=[False], na_position="last")
+            display_df = display_df.sort_values("期間", na_position="last")
         except:
             pass
 
@@ -645,11 +637,10 @@ if st.session_state.extracted_data:
         use_container_width=True,
         column_config={
             "URL": st.column_config.LinkColumn("元記事", display_text="🔗 Link"),
-            "概要": st.column_config.TextColumn("概要", width="large"),
-            "開催場所": st.column_config.TextColumn("開催場所", width="medium"),
+            "概要": st.column_config.TextColumn("概要", width="large")
         },
         hide_index=True
     )
 
     csv_bytes = display_df.to_csv(index=False).encode("utf-8_sig")
-    st.download_button("📥 CSVダウンロード", csv_bytes, "events_full_v2.csv", "text/csv")
+    st.download_button("📥 CSVダウンロード", csv_bytes, "events_full.csv", "text/csv")
