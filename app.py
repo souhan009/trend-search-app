@@ -6,7 +6,7 @@ import time
 import re
 import urllib.parse
 from dataclasses import dataclass
-from typing import List, Dict, Tuple, Optional, Set, Any
+from typing import List, Dict, Tuple, Optional, Set
 
 import pandas as pd
 import requests
@@ -22,9 +22,8 @@ from google.genai import types
 st.set_page_config(page_title="イベント情報「全件網羅」抽出アプリ（完全版）", page_icon="📖", layout="wide")
 st.title("📖 イベント情報「全件網羅」抽出アプリ（完全版）")
 st.markdown("""
-**AI × スマートクローリング（完全版）**  
-一覧ページから **記事URLのみを厳密に抽出** → 記事本文を **ノイズ除去してAI抽出** → 重複除外して一覧化します。  
-**追加機能:** 記事の **リリース日（公開日）**、イベントの **住所 / 緯度 / 経度（取れたら）** を収集します。
+**AI × スマートクローリング（完全版）** 一覧ページから **記事URLのみを厳密に抽出** → 記事本文を **ノイズ除去してAI抽出** → 重複除外して一覧化します。  
+※「記事公開日」と「開催場所」の取得を強化しました。
 """)
 
 # ============================================================
@@ -72,26 +71,13 @@ def get_site_rule(url: str) -> Optional[SiteRule]:
 # Utils
 # ============================================================
 def normalize_date(text: str) -> str:
-    """YYYY年MM月DD日 / YYYY/MM/DD のゼロ埋め等。ISOや時刻を含む場合も軽く整形。"""
     if not text or not isinstance(text, str):
         return ""
-    t = text.strip()
-
-    # ISOっぽい場合（2025-01-02T...）は日付部分だけ拾う
-    m = re.search(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", t)
-    if m:
-        y, mo, d = m.group(1), m.group(2).zfill(2), m.group(3).zfill(2)
-        # 元がスラッシュならスラッシュに寄せる
-        if "/" in t:
-            return f"{y}/{mo}/{d}"
-        return f"{y}年{mo}月{d}日"
-
-    def rep_ymd(m2):
-        return f"{m2.group(1)}年{m2.group(2).zfill(2)}月{m2.group(3).zfill(2)}日"
-
-    t = re.sub(r"(\d{4})年(\d{1,2})月(\d{1,2})日", rep_ymd, t)
-    t = re.sub(r"(\d{4})/(\d{1,2})/(\d{1,2})", lambda m2: f"{m2.group(1)}/{m2.group(2).zfill(2)}/{m2.group(3).zfill(2)}", t)
-    return t.strip()
+    def rep_ymd(m):
+        return f"{m.group(1)}年{m.group(2).zfill(2)}月{m.group(3).zfill(2)}日"
+    text = re.sub(r"(\d{4})年(\d{1,2})月(\d{1,2})日", rep_ymd, text)
+    text = re.sub(r"(\d{4})/(\d{1,2})/(\d{1,2})", lambda m: f"{m.group(1)}/{m.group(2).zfill(2)}/{m.group(3).zfill(2)}", text)
+    return text.strip()
 
 def normalize_string(text) -> str:
     if not isinstance(text, str):
@@ -112,7 +98,7 @@ def safe_json_parse(json_str: str) -> List[Dict]:
         try:
             obj = json.loads(cand)
             return obj if isinstance(obj, list) else []
-        except Exception:
+        except:
             pass
 
     l = s.find("{")
@@ -122,7 +108,7 @@ def safe_json_parse(json_str: str) -> List[Dict]:
         try:
             obj = json.loads(cand)
             return [obj] if isinstance(obj, dict) else []
-        except Exception:
+        except:
             pass
 
     return []
@@ -140,7 +126,7 @@ def is_valid_href(href: str) -> bool:
 def same_domain(url_a: str, url_b: str) -> bool:
     try:
         return urllib.parse.urlparse(url_a).netloc == urllib.parse.urlparse(url_b).netloc
-    except Exception:
+    except:
         return False
 
 def fetch_html(session: requests.Session, url: str, timeout=(5, 20), max_retries=2) -> Optional[str]:
@@ -286,134 +272,6 @@ def extract_article_links_from_listing(
 
     return out
 
-# ------------------------------------------------------------
-# NEW: release date & JSON-LD location extraction
-# ------------------------------------------------------------
-def extract_release_date(soup: BeautifulSoup) -> str:
-    """記事の公開日(リリース日)を meta/time から拾う。取れなければ空。"""
-    meta_selectors = [
-        ("meta", {"property": "article:published_time"}),
-        ("meta", {"property": "og:published_time"}),
-        ("meta", {"name": "pubdate"}),
-        ("meta", {"name": "publishdate"}),
-        ("meta", {"name": "date"}),
-        ("meta", {"name": "dc.date"}),
-        ("meta", {"name": "DC.date"}),
-        ("meta", {"itemprop": "datePublished"}),
-    ]
-    for tag_name, attrs in meta_selectors:
-        m = soup.find(tag_name, attrs=attrs)
-        if m and m.get("content"):
-            return normalize_date(str(m["content"]))
-
-    # timeタグ
-    t = soup.find("time")
-    if t:
-        dt = t.get("datetime")
-        if dt:
-            return normalize_date(str(dt))
-        txt = t.get_text(strip=True)
-        if txt:
-            return normalize_date(txt)
-
-    return ""
-
-def _as_list(x: Any) -> List[Any]:
-    if x is None:
-        return []
-    return x if isinstance(x, list) else [x]
-
-def extract_location_from_jsonld(soup: BeautifulSoup) -> Dict[str, str]:
-    """
-    schema.org Event / Place / PostalAddress / GeoCoordinates から住所/緯度経度を拾う。
-    返り値: {"address": "", "latitude": "", "longitude": ""}
-    """
-    out = {"address": "", "latitude": "", "longitude": ""}
-
-    for sc in soup.find_all("script", attrs={"type": "application/ld+json"}):
-        raw = None
-        try:
-            raw = sc.string or sc.get_text(strip=True)
-            if not raw:
-                continue
-            obj = json.loads(raw)
-        except Exception:
-            continue
-
-        # JSON-LDは dict or list or @graph があり得る
-        nodes: List[Any] = []
-        for node in _as_list(obj):
-            if isinstance(node, dict) and "@graph" in node:
-                nodes.extend(_as_list(node.get("@graph")))
-            else:
-                nodes.append(node)
-
-        for n in nodes:
-            if not isinstance(n, dict):
-                continue
-
-            # Eventっぽい location
-            loc = n.get("location") or n.get("Place") or n.get("place")
-            for loc_node in _as_list(loc):
-                if not isinstance(loc_node, dict):
-                    continue
-
-                # address
-                addr = loc_node.get("address")
-                if isinstance(addr, dict):
-                    parts = [
-                        addr.get("addressRegion"),
-                        addr.get("addressLocality"),
-                        addr.get("streetAddress"),
-                        addr.get("postalCode"),
-                        addr.get("addressCountry"),
-                    ]
-                    addr_text = "".join([p for p in parts if isinstance(p, str) and p.strip()])
-                    if addr_text and not out["address"]:
-                        out["address"] = addr_text
-                elif isinstance(addr, str) and addr.strip() and not out["address"]:
-                    out["address"] = addr.strip()
-
-                # geo
-                geo = loc_node.get("geo")
-                if isinstance(geo, dict):
-                    lat = geo.get("latitude")
-                    lon = geo.get("longitude")
-                    if lat is not None and not out["latitude"]:
-                        out["latitude"] = str(lat).strip()
-                    if lon is not None and not out["longitude"]:
-                        out["longitude"] = str(lon).strip()
-
-            # Event直下の address/geo があるパターン
-            addr2 = n.get("address")
-            if isinstance(addr2, dict) and not out["address"]:
-                parts = [
-                    addr2.get("addressRegion"),
-                    addr2.get("addressLocality"),
-                    addr2.get("streetAddress"),
-                    addr2.get("postalCode"),
-                ]
-                addr_text = "".join([p for p in parts if isinstance(p, str) and p.strip()])
-                if addr_text:
-                    out["address"] = addr_text
-
-            geo2 = n.get("geo")
-            if isinstance(geo2, dict):
-                lat = geo2.get("latitude")
-                lon = geo2.get("longitude")
-                if lat is not None and not out["latitude"]:
-                    out["latitude"] = str(lat).strip()
-                if lon is not None and not out["longitude"]:
-                    out["longitude"] = str(lon).strip()
-
-            if out["address"] or out["latitude"] or out["longitude"]:
-                return out  # 取れたら早期return
-
-    return out
-
-# ------------------------------------------------------------
-# Gemini extraction
-# ------------------------------------------------------------
 def ai_extract_events_from_text(
     client: genai.Client,
     model_name: str,
@@ -426,26 +284,25 @@ def ai_extract_events_from_text(
         if not chunk or len(chunk) < 120:
             continue
 
+        # プロンプト：記事公開日と場所の詳細取得を追加
         prompt = f"""
 以下のWebページ本文から、イベント・ニュース情報をJSON配列で漏れなく抽出してください。
 【現在日付: {today}】
 
 [抽出ルール]
-- 本文に含まれるイベント（展示、催事、キャンペーン、募集、発表会、セミナー等）や、日時・期間・場所が書かれている情報を可能な限り抽出。
+- 本文に含まれるイベント（展示、催事、キャンペーン、募集、発表会、セミナー等）情報を可能な限り抽出。
 - 省略厳禁。ただし「企業フッタ・問い合わせ先テンプレ」などの非イベント定型文は無理に拾わない。
-- date_info は本文の表記のままでも良いが、可能なら YYYY年MM月DD日 / YYYY/MM/DD / 期間表現（例: 2025年01月01日〜2025年02月01日）。
-- address / latitude / longitude は本文から推定できる範囲でよい（不明なら空文字）。
+- date_info (イベント開催日) は、可能なら YYYY年MM月DD日 / 期間表現（例: 2025年01月01日〜2025年02月01日）。
+- published_at (記事公開日) は、記事の冒頭や末尾にある「ニュースの配信日」を抽出。
 - 出力は必ずJSONのみ（説明文は禁止）。
 
 [JSON形式]
 [
   {{
     "name": "タイトル",
-    "place": "場所（不明なら空文字）",
-    "address": "住所（不明なら空文字）",
-    "latitude": "緯度（不明なら空文字）",
-    "longitude": "経度（不明なら空文字）",
-    "date_info": "日付や期間（不明なら空文字）",
+    "published_at": "記事公開日（例: 2024年12月18日）。不明なら空文字",
+    "place": "開催場所・施設名・詳細な住所（オンラインなら「オンライン」）。不明なら空文字",
+    "date_info": "イベント開催期間・日時（不明なら空文字）",
     "description": "概要（短めに）"
   }}
 ]
@@ -472,10 +329,8 @@ def ai_extract_events_from_text(
                         continue
                     out = {
                         "name": name,
+                        "published_at": normalize_date(str(item.get("published_at") or "").strip()),
                         "place": str(item.get("place") or "").strip(),
-                        "address": str(item.get("address") or "").strip(),
-                        "latitude": str(item.get("latitude") or "").strip(),
-                        "longitude": str(item.get("longitude") or "").strip(),
                         "date_info": normalize_date(str(item.get("date_info") or "").strip()),
                         "description": str(item.get("description") or "").strip(),
                     }
@@ -531,7 +386,7 @@ if uploaded_file is not None:
     try:
         existing_df = pd.read_csv(uploaded_file)
         name_col = next((c for c in existing_df.columns if "イベント名" in c or c.lower() in ["name", "title"]), None)
-        place_col = next((c for c in existing_df.columns if "場所" in c or c.lower() in ["place", "location"]), None)
+        place_col = next((c for c in existing_df.columns if "開催場所" in c or "場所" in c or c.lower() in ["place", "location"]), None)
 
         if name_col:
             for _, row in existing_df.iterrows():
@@ -700,11 +555,6 @@ if st.button("一括読み込み開始", type="primary"):
             continue
 
         soup = BeautifulSoup(html, "html.parser")
-
-        # NEW: リリース日・JSON-LD 位置情報
-        release_date = extract_release_date(soup)
-        loc = extract_location_from_jsonld(soup)  # {"address","latitude","longitude"}
-
         clean_soup(soup)
         text = extract_main_text(soup, rule)
 
@@ -712,17 +562,6 @@ if st.button("一括読み込み開始", type="primary"):
         items = ai_extract_events_from_text(client, model_name, temperature, text, today)
 
         for item in items:
-            # NEW: 記事単位情報を付与
-            item["release_date"] = release_date
-
-            # JSON-LDで取れた値を優先（Geminiが空なら補完）
-            if loc.get("address") and not item.get("address"):
-                item["address"] = loc["address"]
-            if loc.get("latitude") and not item.get("latitude"):
-                item["latitude"] = loc["latitude"]
-            if loc.get("longitude") and not item.get("longitude"):
-                item["longitude"] = loc["longitude"]
-
             n = normalize_string(item.get("name", ""))
             p = normalize_string(item.get("place", ""))
 
@@ -778,28 +617,27 @@ if st.session_state.extracted_data:
 
     st.markdown(f"**取得件数: {len(df)}**（更新: {st.session_state.last_update}）")
 
+    # カラム名のマッピング（新項目対応）
     display_df = df.rename(columns={
-        "release_date": "リリース日",
-        "date_info": "期間",
+        "published_at": "記事公開日",
+        "date_info": "開催期間",
         "name": "イベント名",
-        "place": "場所",
-        "address": "住所",
-        "latitude": "緯度",
-        "longitude": "経度",
+        "place": "開催場所",
         "description": "概要",
         "source_label": "情報源",
         "source_url": "URL"
     })
 
-    desired_cols = ["リリース日", "期間", "イベント名", "場所", "住所", "緯度", "経度", "概要", "情報源", "URL"]
+    # 表示したい順にカラムを並べる
+    desired_cols = ["記事公開日", "開催期間", "イベント名", "開催場所", "概要", "情報源", "URL"]
     cols = [c for c in desired_cols if c in display_df.columns]
     display_df = display_df[cols]
 
-    # 期間でソート（文字列なので簡易。厳密化は別途）
-    if "期間" in display_df.columns:
+    # ソート（記事公開日が新しい順 → 開催期間順）
+    if "記事公開日" in display_df.columns:
         try:
-            display_df = display_df.sort_values("期間", na_position="last")
-        except Exception:
+            display_df = display_df.sort_values(by=["記事公開日"], ascending=[False], na_position="last")
+        except:
             pass
 
     st.dataframe(
@@ -808,9 +646,10 @@ if st.session_state.extracted_data:
         column_config={
             "URL": st.column_config.LinkColumn("元記事", display_text="🔗 Link"),
             "概要": st.column_config.TextColumn("概要", width="large"),
+            "開催場所": st.column_config.TextColumn("開催場所", width="medium"),
         },
         hide_index=True
     )
 
     csv_bytes = display_df.to_csv(index=False).encode("utf-8_sig")
-    st.download_button("📥 CSVダウンロード", csv_bytes, "events_full.csv", "text/csv")
+    st.download_button("📥 CSVダウンロード", csv_bytes, "events_full_v2.csv", "text/csv")
