@@ -19,11 +19,11 @@ from google.genai import types
 # ============================================================
 # Streamlit config
 # ============================================================
-st.set_page_config(page_title="イベント情報抽出（バッチ爆速版）", page_icon="⚡", layout="wide")
-st.title("⚡ イベント情報抽出アプリ（バッチ爆速版）")
+st.set_page_config(page_title="イベント情報抽出（安定版）", page_icon="📖", layout="wide")
+st.title("📖 イベント情報抽出アプリ（安定版）")
 st.markdown("""
-**AI × バッチ処理（最速）** 複数の記事をまとめてAIに送ることで、待機時間を大幅に短縮しました。  
-**設定:** サイドバーの「バッチサイズ」で、一度に処理する記事数を変更できます（推奨: 5〜10）。
+**AI × スマートクローリング（安定版）** 一覧ページから記事URLを厳密に抽出 → 本文をAI解析 → 重複除外して一覧化。  
+※バッチ処理を含まない、1件ずつ確実に処理するバージョンです。
 """)
 
 # ============================================================
@@ -182,6 +182,16 @@ def extract_main_text(soup: BeautifulSoup, rule: Optional[SiteRule]) -> str:
                 continue
     return soup.get_text("\n", strip=True)
 
+def split_text_into_chunks(text: str, chunk_size=8000, overlap=400):
+    if not text:
+        return
+    start = 0
+    n = len(text)
+    while start < n:
+        end = min(start + chunk_size, n)
+        yield text[start:end]
+        start = max(end - overlap, end)
+
 def find_next_page_url(soup: BeautifulSoup, current_url: str, rule: Optional[SiteRule]) -> Optional[str]:
     link_next = soup.find("link", rel="next")
     if link_next and link_next.get("href") and is_valid_href(link_next["href"]):
@@ -308,133 +318,105 @@ def extract_location_from_jsonld(soup: BeautifulSoup) -> Dict[str, str]:
     return out
 
 # ------------------------------------------------------------
-# Batch Gemini Extraction (CORE UPDATE)
+# Gemini Extraction (Single Article)
 # ------------------------------------------------------------
-def ai_extract_events_batch(
+def ai_extract_events_from_text(
     client: genai.Client,
     model_name: str,
     temperature: float,
-    batch_items: List[Dict], # [{text, url, release_date, loc, label}, ...]
+    text: str,
     today: datetime.date,
     debug_mode: bool,
     gemini_error_counter: Dict[str, int],
+    min_chunk_len: int = 120,
 ) -> List[Dict]:
+    all_items: List[Dict] = []
     
-    # テキスト結合（プロンプト作成）
-    combined_text = ""
-    for i, item in enumerate(batch_items):
-        combined_text += f"\n--- [Article ID: {i}] (Source: {item['url']}) ---\n"
-        combined_text += item['text'][:8000] # 長すぎるとトークン死するのでカット
-        combined_text += "\n"
+    for chunk in split_text_into_chunks(text, chunk_size=8000, overlap=400):
+        if not chunk or len(chunk) < min_chunk_len:
+            continue
 
-    prompt = f"""
-以下の {len(batch_items)} 件の記事（Article ID: 0 〜 {len(batch_items)-1}）から、イベント情報を抽出してください。
+        prompt = f"""
+以下のWebページ本文から、イベント・ニュース情報をJSON配列で漏れなく抽出してください。
 【現在日付: {today}】
 
-[ルール]
-- 各記事についてイベント（展示、催事、キャンペーン等）があれば抽出。なければスキップ。
-- **重要:** 出力JSONには必ず `article_id` (数値) を含めること。これで元記事と紐付けます。
-- date_info: YYYY年MM月DD日 / 期間。
-- address/latitude/longitude: 本文から推測（不明なら空文字）。
-- 出力はJSON配列のみ。
+[抽出ルール]
+- 本文に含まれるイベント（展示、催事、キャンペーン、募集、発表会、セミナー等）や、日時・期間・場所が書かれている情報を可能な限り抽出。
+- 省略厳禁。ただし「企業フッタ・問い合わせ先テンプレ」などの非イベント定型文は無理に拾わない。
+- date_info は本文の表記のままでも良いが、可能なら YYYY年MM月DD日 / YYYY/MM/DD / 期間表現（例: 2025年01月01日〜2025年02月01日）。
+- address / latitude / longitude は本文から推定できる範囲でよい（不明なら空文字）。
+- 出力は必ずJSONのみ（説明文は禁止）。
 
 [JSON形式]
 [
   {{
-    "article_id": 0,
     "name": "タイトル",
-    "place": "場所",
-    "address": "住所",
-    "latitude": "緯度",
-    "longitude": "経度",
-    "date_info": "日時",
-    "description": "概要"
-  }},
-  ...
+    "place": "場所（不明なら空文字）",
+    "address": "住所（不明なら空文字）",
+    "latitude": "緯度（不明なら空文字）",
+    "longitude": "経度（不明なら空文字）",
+    "date_info": "日付や期間（不明なら空文字）",
+    "description": "概要（短めに）"
+  }}
 ]
 
-対象記事データ:
-{combined_text}
+本文:
+{chunk}
 """
-
-    extracted_results = []
-    max_retries = 3
-    
-    for attempt in range(max_retries + 1):
-        try:
-            res = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=float(temperature)
+        max_retries = 3
+        for attempt in range(max_retries + 1):
+            try:
+                res = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        temperature=float(temperature)
+                    )
                 )
-            )
-            
-            if debug_mode:
-                st.write(f"🧪 Batch Raw Response ({len(batch_items)} articles):", (res.text or "")[:200])
 
-            parsed = safe_json_parse(res.text)
-            if isinstance(parsed, list):
-                extracted_results = parsed
-                break # 成功
-            else:
-                break
-                
-        except Exception as e:
-            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                if attempt < max_retries:
-                    wait_time = 20 * (attempt + 1)
-                    if debug_mode:
-                        st.warning(f"⚠️ 429 Detected in Batch. Retrying in {wait_time}s...")
-                    time.sleep(wait_time)
-                    continue
+                if debug_mode:
+                    st.write("🧪 Gemini raw (head 400):", (res.text or "")[:400])
+
+                extracted = safe_json_parse(res.text)
+                if isinstance(extracted, list):
+                    for item in extracted:
+                        if not item or not isinstance(item, dict):
+                            continue
+                        name = str(item.get("name") or "").strip()
+                        if not name:
+                            continue
+                        out = {
+                            "name": name,
+                            "place": str(item.get("place") or "").strip(),
+                            "address": str(item.get("address") or "").strip(),
+                            "latitude": str(item.get("latitude") or "").strip(),
+                            "longitude": str(item.get("longitude") or "").strip(),
+                            "date_info": normalize_date(str(item.get("date_info") or "").strip()),
+                            "description": str(item.get("description") or "").strip(),
+                        }
+                        all_items.append(out)
+                break 
+
+            except Exception as e:
+                err_str = str(e)
+                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                    if attempt < max_retries:
+                        wait_time = 10 * (attempt + 1)
+                        if debug_mode:
+                            st.warning(f"⚠️ 429 Detected. Retrying in {wait_time}s... ({attempt + 1}/{max_retries})")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        gemini_error_counter["count"] = gemini_error_counter.get("count", 0) + 1
+                        if debug_mode: st.error(f"❌ Retry Limit Reached: {e}")
                 else:
                     gemini_error_counter["count"] = gemini_error_counter.get("count", 0) + 1
-                    if debug_mode: st.error(f"❌ Batch Retry Limit: {e}")
-            else:
-                gemini_error_counter["count"] = gemini_error_counter.get("count", 0) + 1
-                if debug_mode: st.error(f"❌ Batch Error: {e}")
-                break
+                    if debug_mode: st.error(f"❌ Gemini Error: {e}")
+                    else: st.warning(f"❌ Gemini Error: {e}")
+                    break
 
-    # 結果をマージ
-    final_items = []
-    for item in extracted_results:
-        if not isinstance(item, dict): continue
-        
-        # ID紐付け
-        aid = item.get("article_id")
-        if aid is None or not isinstance(aid, int) or aid < 0 or aid >= len(batch_items):
-            continue
-            
-        original = batch_items[aid]
-        
-        # メタデータの優先順位: 構造化データ > AI推測
-        final_lat = item.get("latitude", "")
-        if original["loc"].get("latitude"): final_lat = original["loc"]["latitude"]
-        
-        final_lon = item.get("longitude", "")
-        if original["loc"].get("longitude"): final_lon = original["loc"]["longitude"]
-        
-        final_addr = item.get("address", "")
-        if original["loc"].get("address"): final_addr = original["loc"]["address"]
-
-        out = {
-            "name": str(item.get("name") or "").strip(),
-            "place": str(item.get("place") or "").strip(),
-            "address": str(final_addr).strip(),
-            "latitude": str(final_lat).strip(),
-            "longitude": str(final_lon).strip(),
-            "date_info": normalize_date(str(item.get("date_info") or "").strip()),
-            "description": str(item.get("description") or "").strip(),
-            "release_date": original["release_date"],
-            "source_label": original["label"],
-            "source_url": original["url"]
-        }
-        if out["name"]:
-            final_items.append(out)
-
-    return final_items
+    return all_items
 
 # ============================================================
 # Sidebar UI
@@ -449,15 +431,14 @@ with st.sidebar:
     }
     selected_presets = st.multiselect("プリセット", list(PRESET_URLS.keys()), default=["PRTIMES (グルメ)"])
     st.markdown("### 🔗 カスタムURL")
-    custom_urls_text = st.text_area("URL（1行に1つ）", height=80)
+    custom_urls_text = st.text_area("URL（1行に1つ）", height=110)
 
     st.divider()
     st.header("2. 探索設定")
-    batch_size = st.slider("バッチサイズ（1回に送る記事数）", 1, 20, 5)
     max_pages = st.slider("一覧の最大ページ数", 1, 30, 6)
     link_limit_per_page = st.slider("1ページあたり収集URL上限", 10, 300, 80)
     max_articles_total = st.slider("総記事数の上限", 20, 2000, 400, step=20)
-    sleep_sec = st.slider("AIリクエスト間の待機(秒)", 0.0, 60.0, 10.0, step=1.0)
+    sleep_sec = st.slider("アクセス間隔（秒）", 0.0, 30.0, 10.0, step=1.0)
     
     st.divider()
     st.header("3. Gemini設定")
@@ -467,7 +448,8 @@ with st.sidebar:
     st.divider()
     st.header("🐞 デバッグ")
     debug_mode = st.checkbox("デバッグモード", value=False)
-    
+    debug_show_articles = st.slider("デバッグ表示する記事数", 1, 10, 3)
+
     st.divider()
     st.header("4. 重複除外")
     uploaded_file = st.file_uploader("過去CSV", type="csv")
@@ -498,11 +480,8 @@ if uploaded_file:
 
 if "extracted_data" not in st.session_state: st.session_state.extracted_data = None
 
-if st.button("🚀 一括読み込み開始 (バッチ処理)", type="primary"):
-    # ▼▼▼ 修正: ここに today の定義を追加しました ▼▼▼
+if st.button("一括読み込み開始", type="primary"):
     today = datetime.date.today()
-    # ▲▲▲ 修正完了 ▲▲▲
-
     api_key = os.environ.get("GOOGLE_API_KEY") or st.secrets.get("GOOGLE_API_KEY")
     if not api_key:
         st.error("API Key未設定")
@@ -554,17 +533,16 @@ if st.button("🚀 一括読み込み開始 (バッチ処理)", type="primary"):
     collected = collected[:max_articles_total]
     if not collected: st.error("記事URLが見つかりませんでした"); st.stop()
     
-    # 2. Batch Process
+    # 2. Extract Events
     extracted_all = []
     run_fingerprints = set()
     gemini_error_counter = {"count": 0}
     
-    batch_buffer = [] 
-    
-    status.info(f"🧠 記事解析開始: {len(collected)}件 (バッチサイズ: {batch_size})")
+    status.info(f"🧠 記事解析開始: {len(collected)}件")
     
     for i, (url, label) in enumerate(collected):
         progress.progress((i+1) / len(collected))
+        status.info(f"🧠 解析中 ({i+1}/{len(collected)}): {url}")
         
         rule = get_site_rule(url)
         if not is_article_url(url, rule): continue
@@ -579,30 +557,29 @@ if st.button("🚀 一括読み込み開始 (バッチ処理)", type="primary"):
         
         if not text or len(text) < 200: continue
         
-        batch_buffer.append({
-            "text": text,
-            "url": url,
-            "label": label,
-            "release_date": r_date,
-            "loc": loc
-        })
+        if debug_mode and i < debug_show_articles:
+            st.write(f"🧪 [debug] len={len(text)} date={r_date} loc={loc}")
+
+        items = ai_extract_events_from_text(
+            client, model_name, temperature, 
+            text, today, debug_mode and (i < debug_show_articles), gemini_error_counter
+        )
+            
+        for item in items:
+            item["release_date"] = r_date
+            if loc.get("address") and not item.get("address"): item["address"] = loc["address"]
+            if loc.get("latitude") and not item.get("latitude"): item["latitude"] = loc["latitude"]
+            if loc.get("longitude") and not item.get("longitude"): item["longitude"] = loc["longitude"]
+
+            fp = normalize_string(item["name"])
+            if fp in existing_fingerprints or fp in run_fingerprints: continue
+            run_fingerprints.add(fp)
+            
+            item["source_label"] = label
+            item["source_url"] = url
+            extracted_all.append(item)
         
-        if len(batch_buffer) >= batch_size or i == len(collected) - 1:
-            status.info(f"🤖 AI解析中... ({len(batch_buffer)}件まとめて送信) Total: {len(extracted_all)}")
-            
-            batch_results = ai_extract_events_batch(
-                client, model_name, temperature, 
-                batch_buffer, today, debug_mode, gemini_error_counter
-            )
-            
-            for item in batch_results:
-                fp = normalize_string(item["name"])
-                if fp in existing_fingerprints or fp in run_fingerprints: continue
-                run_fingerprints.add(fp)
-                extracted_all.append(item)
-            
-            batch_buffer = []
-            time.sleep(sleep_sec)
+        time.sleep(sleep_sec)
             
     st.session_state.extracted_data = extracted_all
     st.session_state.last_update = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -626,4 +603,4 @@ if st.session_state.extracted_data:
     
     st.dataframe(display_df, use_container_width=True, hide_index=True,
                  column_config={"URL": st.column_config.LinkColumn("Link")})
-    st.download_button("CSV DL", display_df.to_csv(index=False).encode("utf-8_sig"), "events_batch.csv")
+    st.download_button("CSV DL", display_df.to_csv(index=False).encode("utf-8_sig"), "events_stable.csv")
