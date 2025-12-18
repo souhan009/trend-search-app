@@ -500,7 +500,7 @@ with st.sidebar:
     st.header("2. 探索設定")
     max_pages = st.slider("一覧の最大ページ数（ページ送り回数）", 1, 30, 6)
     link_limit_per_page = st.slider("1ページあたり収集する記事URL上限", 10, 300, 80, step=10)
-max_articles_total = st.slider("総記事数の上限（安全策）", 20, 2000, 400, step=20)
+    max_articles_total = st.slider("総記事数の上限（安全策）", 20, 2000, 400, step=20)
     # ▼▼▼ 上限を30秒に変更し、ステップを1秒刻みにしました ▼▼▼
     sleep_sec = st.slider("アクセス間隔（秒）", 0.0, 30.0, 10.0, step=1.0)
 
