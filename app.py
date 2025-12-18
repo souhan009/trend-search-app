@@ -6,7 +6,7 @@ import time
 import re
 import urllib.parse
 from dataclasses import dataclass
-from typing import List, Dict, Tuple, Optional, Set
+from typing import List, Dict, Tuple, Optional, Set, Any
 
 import pandas as pd
 import requests
@@ -23,7 +23,9 @@ st.set_page_config(page_title="イベント情報「全件網羅」抽出アプ�
 st.title("📖 イベント情報「全件網羅」抽出アプリ（完全版）")
 st.markdown("""
 **AI × スマートクローリング（完全版）**  
-一覧ページから **記事URLのみを厳密に抽出** → 記事本文を **ノイズ除去してAI抽出** → 重複除外して一覧化します。
+一覧ページから **記事URLのみを厳密に抽出** → 記事本文を **ノイズ除去してAI抽出** → 重複除外して一覧化します。  
+**追加機能:** 記事の **リリース日（公開日）**、イベントの **住所 / 緯度 / 経度（取れたら）** を収集します。  
+**追加（重要）:** Geminiエラーを **握りつぶさず表示** し、原因切り分けできるようにしました。
 """)
 
 # ============================================================
@@ -35,9 +37,7 @@ class SiteRule:
     match_netloc: str
     article_path_allow: re.Pattern
     listing_next_hint_tokens: Tuple[str, ...] = ("次へ", "次の", "もっと見る", "Next", "NEXT", "More", "MORE")
-    # listingに混ざりがちな不要パス
     deny_path_prefixes: Tuple[str, ...] = ("/ranking", "/tag", "/tags", "/category", "/categories", "/login", "/signup", "/account")
-    # 本文抽出の優先セレクタ
     content_selectors: Tuple[str, ...] = ("article", "main", "div.article", "div#main", "div.content")
 
 SITE_RULES: List[SiteRule] = [
@@ -73,11 +73,23 @@ def get_site_rule(url: str) -> Optional[SiteRule]:
 def normalize_date(text: str) -> str:
     if not text or not isinstance(text, str):
         return ""
-    def rep_ymd(m):
-        return f"{m.group(1)}年{m.group(2).zfill(2)}月{m.group(3).zfill(2)}日"
-    text = re.sub(r"(\d{4})年(\d{1,2})月(\d{1,2})日", rep_ymd, text)
-    text = re.sub(r"(\d{4})/(\d{1,2})/(\d{1,2})", lambda m: f"{m.group(1)}/{m.group(2).zfill(2)}/{m.group(3).zfill(2)}", text)
-    return text.strip()
+    t = text.strip()
+
+    # ISOっぽい場合（2025-01-02T...）は日付部分だけ拾う
+    m = re.search(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", t)
+    if m:
+        y, mo, d = m.group(1), m.group(2).zfill(2), m.group(3).zfill(2)
+        if "/" in t:
+            return f"{y}/{mo}/{d}"
+        return f"{y}年{mo}月{d}日"
+
+    def rep_ymd(m2):
+        return f"{m2.group(1)}年{m2.group(2).zfill(2)}月{m2.group(3).zfill(2)}日"
+
+    t = re.sub(r"(\d{4})年(\d{1,2})月(\d{1,2})日", rep_ymd, t)
+    t = re.sub(r"(\d{4})/(\d{1,2})/(\d{1,2})",
+               lambda m2: f"{m2.group(1)}/{m2.group(2).zfill(2)}/{m2.group(3).zfill(2)}", t)
+    return t.strip()
 
 def normalize_string(text) -> str:
     if not isinstance(text, str):
@@ -98,7 +110,7 @@ def safe_json_parse(json_str: str) -> List[Dict]:
         try:
             obj = json.loads(cand)
             return obj if isinstance(obj, list) else []
-        except:
+        except Exception:
             pass
 
     l = s.find("{")
@@ -108,7 +120,7 @@ def safe_json_parse(json_str: str) -> List[Dict]:
         try:
             obj = json.loads(cand)
             return [obj] if isinstance(obj, dict) else []
-        except:
+        except Exception:
             pass
 
     return []
@@ -126,7 +138,7 @@ def is_valid_href(href: str) -> bool:
 def same_domain(url_a: str, url_b: str) -> bool:
     try:
         return urllib.parse.urlparse(url_a).netloc == urllib.parse.urlparse(url_b).netloc
-    except:
+    except Exception:
         return False
 
 def fetch_html(session: requests.Session, url: str, timeout=(5, 20), max_retries=2) -> Optional[str]:
@@ -147,7 +159,6 @@ def fetch_html(session: requests.Session, url: str, timeout=(5, 20), max_retries
     return None
 
 def clean_soup(soup: BeautifulSoup) -> None:
-    # 確実に消したいタグ
     for t in soup.find_all(["script", "style", "nav", "footer", "iframe", "header", "noscript", "svg"]):
         try:
             t.decompose()
@@ -156,7 +167,6 @@ def clean_soup(soup: BeautifulSoup) -> None:
 
     exclude_tokens = ["sidebar", "ranking", "recommend", "widget", "ad", "bread", "breadcrumb", "banner"]
 
-    # find_all(True)で全tag。壊れ要素耐性をつける
     for t in soup.find_all(True):
         if not isinstance(t, Tag):
             continue
@@ -176,7 +186,6 @@ def clean_soup(soup: BeautifulSoup) -> None:
                 pass
 
 def extract_main_text(soup: BeautifulSoup, rule: Optional[SiteRule]) -> str:
-    """本文を(できれば)main/articleから抽出、だめなら全部のテキスト"""
     if rule:
         for sel in rule.content_selectors:
             try:
@@ -198,21 +207,18 @@ def split_text_into_chunks(text: str, chunk_size=8000, overlap=400):
         start = max(end - overlap, end)
 
 def find_next_page_url(soup: BeautifulSoup, current_url: str, rule: Optional[SiteRule]) -> Optional[str]:
-    # 1) rel=next
     link_next = soup.find("link", rel="next")
     if link_next and link_next.get("href") and is_valid_href(link_next["href"]):
         joined = urllib.parse.urljoin(current_url, link_next["href"])
         if same_domain(joined, current_url):
             return joined
 
-    # 2) a[rel=next]
     a_next = soup.find("a", rel=lambda v: v and "next" in str(v).lower(), href=True)
     if a_next and is_valid_href(a_next["href"]):
         joined = urllib.parse.urljoin(current_url, a_next["href"])
         if same_domain(joined, current_url):
             return joined
 
-    # 3) テキストヒント
     tokens = rule.listing_next_hint_tokens if rule else ("次へ", "次の", "もっと見る", "Next", "More")
     for a in soup.find_all("a", href=True):
         try:
@@ -229,7 +235,7 @@ def find_next_page_url(soup: BeautifulSoup, current_url: str, rule: Optional[Sit
 
 def is_article_url(url: str, rule: Optional[SiteRule]) -> bool:
     if not rule:
-        return True  # unknown site: allow (汎用運用)
+        return True
     pu = urllib.parse.urlparse(url)
     path = pu.path or ""
     low = path.lower()
@@ -245,7 +251,6 @@ def extract_article_links_from_listing(
     rule: Optional[SiteRule],
     link_limit: int = 80
 ) -> List[str]:
-    """一覧ページから記事URLのみ厳密抽出（サイトルール適用）"""
     base = urllib.parse.urlparse(current_url)
     out: List[str] = []
     seen: Set[str] = set()
@@ -260,7 +265,6 @@ def extract_article_links_from_listing(
         if pu.netloc != base.netloc:
             continue
 
-        # 最終ゲート：記事URL判定
         if not is_article_url(url, rule):
             continue
 
@@ -272,16 +276,136 @@ def extract_article_links_from_listing(
 
     return out
 
+# ------------------------------------------------------------
+# Release date & JSON-LD location extraction
+# ------------------------------------------------------------
+def extract_release_date(soup: BeautifulSoup) -> str:
+    meta_selectors = [
+        ("meta", {"property": "article:published_time"}),
+        ("meta", {"property": "og:published_time"}),
+        ("meta", {"name": "pubdate"}),
+        ("meta", {"name": "publishdate"}),
+        ("meta", {"name": "date"}),
+        ("meta", {"name": "dc.date"}),
+        ("meta", {"name": "DC.date"}),
+        ("meta", {"itemprop": "datePublished"}),
+    ]
+    for tag_name, attrs in meta_selectors:
+        m = soup.find(tag_name, attrs=attrs)
+        if m and m.get("content"):
+            return normalize_date(str(m["content"]))
+
+    t = soup.find("time")
+    if t:
+        dt = t.get("datetime")
+        if dt:
+            return normalize_date(str(dt))
+        txt = t.get_text(strip=True)
+        if txt:
+            return normalize_date(txt)
+
+    return ""
+
+def _as_list(x: Any) -> List[Any]:
+    if x is None:
+        return []
+    return x if isinstance(x, list) else [x]
+
+def extract_location_from_jsonld(soup: BeautifulSoup) -> Dict[str, str]:
+    out = {"address": "", "latitude": "", "longitude": ""}
+
+    for sc in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        try:
+            raw = sc.string or sc.get_text(strip=True)
+            if not raw:
+                continue
+            obj = json.loads(raw)
+        except Exception:
+            continue
+
+        nodes: List[Any] = []
+        for node in _as_list(obj):
+            if isinstance(node, dict) and "@graph" in node:
+                nodes.extend(_as_list(node.get("@graph")))
+            else:
+                nodes.append(node)
+
+        for n in nodes:
+            if not isinstance(n, dict):
+                continue
+
+            loc = n.get("location") or n.get("Place") or n.get("place")
+            for loc_node in _as_list(loc):
+                if not isinstance(loc_node, dict):
+                    continue
+
+                addr = loc_node.get("address")
+                if isinstance(addr, dict):
+                    parts = [
+                        addr.get("addressRegion"),
+                        addr.get("addressLocality"),
+                        addr.get("streetAddress"),
+                        addr.get("postalCode"),
+                        addr.get("addressCountry"),
+                    ]
+                    addr_text = "".join([p for p in parts if isinstance(p, str) and p.strip()])
+                    if addr_text and not out["address"]:
+                        out["address"] = addr_text
+                elif isinstance(addr, str) and addr.strip() and not out["address"]:
+                    out["address"] = addr.strip()
+
+                geo = loc_node.get("geo")
+                if isinstance(geo, dict):
+                    lat = geo.get("latitude")
+                    lon = geo.get("longitude")
+                    if lat is not None and not out["latitude"]:
+                        out["latitude"] = str(lat).strip()
+                    if lon is not None and not out["longitude"]:
+                        out["longitude"] = str(lon).strip()
+
+            addr2 = n.get("address")
+            if isinstance(addr2, dict) and not out["address"]:
+                parts = [
+                    addr2.get("addressRegion"),
+                    addr2.get("addressLocality"),
+                    addr2.get("streetAddress"),
+                    addr2.get("postalCode"),
+                ]
+                addr_text = "".join([p for p in parts if isinstance(p, str) and p.strip()])
+                if addr_text:
+                    out["address"] = addr_text
+
+            geo2 = n.get("geo")
+            if isinstance(geo2, dict):
+                lat = geo2.get("latitude")
+                lon = geo2.get("longitude")
+                if lat is not None and not out["latitude"]:
+                    out["latitude"] = str(lat).strip()
+                if lon is not None and not out["longitude"]:
+                    out["longitude"] = str(lon).strip()
+
+            if out["address"] or out["latitude"] or out["longitude"]:
+                return out
+
+    return out
+
+# ------------------------------------------------------------
+# Gemini extraction (NEW: error display / counters)
+# ------------------------------------------------------------
 def ai_extract_events_from_text(
     client: genai.Client,
     model_name: str,
     temperature: float,
     text: str,
     today: datetime.date,
+    debug_mode: bool,
+    gemini_error_counter: Dict[str, int],
+    min_chunk_len: int = 120,
 ) -> List[Dict]:
     all_items: List[Dict] = []
+
     for chunk in split_text_into_chunks(text, chunk_size=8000, overlap=400):
-        if not chunk or len(chunk) < 120:
+        if not chunk or len(chunk) < min_chunk_len:
             continue
 
         prompt = f"""
@@ -292,6 +416,7 @@ def ai_extract_events_from_text(
 - 本文に含まれるイベント（展示、催事、キャンペーン、募集、発表会、セミナー等）や、日時・期間・場所が書かれている情報を可能な限り抽出。
 - 省略厳禁。ただし「企業フッタ・問い合わせ先テンプレ」などの非イベント定型文は無理に拾わない。
 - date_info は本文の表記のままでも良いが、可能なら YYYY年MM月DD日 / YYYY/MM/DD / 期間表現（例: 2025年01月01日〜2025年02月01日）。
+- address / latitude / longitude は本文から推定できる範囲でよい（不明なら空文字）。
 - 出力は必ずJSONのみ（説明文は禁止）。
 
 [JSON形式]
@@ -299,6 +424,9 @@ def ai_extract_events_from_text(
   {{
     "name": "タイトル",
     "place": "場所（不明なら空文字）",
+    "address": "住所（不明なら空文字）",
+    "latitude": "緯度（不明なら空文字）",
+    "longitude": "経度（不明なら空文字）",
     "date_info": "日付や期間（不明なら空文字）",
     "description": "概要（短めに）"
   }}
@@ -316,6 +444,10 @@ def ai_extract_events_from_text(
                     temperature=float(temperature)
                 )
             )
+
+            if debug_mode:
+                st.write("🧪 Gemini raw (先頭400文字):", (res.text or "")[:400])
+
             extracted = safe_json_parse(res.text)
             if isinstance(extracted, list):
                 for item in extracted:
@@ -327,11 +459,22 @@ def ai_extract_events_from_text(
                     out = {
                         "name": name,
                         "place": str(item.get("place") or "").strip(),
+                        "address": str(item.get("address") or "").strip(),
+                        "latitude": str(item.get("latitude") or "").strip(),
+                        "longitude": str(item.get("longitude") or "").strip(),
                         "date_info": normalize_date(str(item.get("date_info") or "").strip()),
                         "description": str(item.get("description") or "").strip(),
                     }
                     all_items.append(out)
-        except Exception:
+
+        except Exception as e:
+            # NEW: エラーを握りつぶさず、デバッグ時は表示。常に回数を集計。
+            gemini_error_counter["count"] = gemini_error_counter.get("count", 0) + 1
+            if debug_mode:
+                st.error(f"❌ Geminiエラー: {e}")
+            # デバッグでなくても、1行だけは表示して気づけるようにする
+            else:
+                st.warning(f"❌ Gemini呼び出しエラー（詳細はデバッグモードで表示）: {type(e).__name__}")
             continue
 
     return all_items
@@ -371,6 +514,11 @@ with st.sidebar:
     temperature = st.slider("temperature（0推奨）", 0.0, 1.0, 0.0, step=0.1)
 
     st.divider()
+    st.header("🐞 デバッグ")
+    debug_mode = st.checkbox("デバッグモード（Gemini raw/本文先頭を表示）", value=False)
+    debug_show_articles = st.slider("デバッグ表示する記事数", 1, 10, 3)
+
+    st.divider()
     st.header("4. 既存CSVによる重複除外")
     uploaded_file = st.file_uploader("過去CSV（重複除外用）", type="csv")
 
@@ -408,7 +556,6 @@ if "last_update" not in st.session_state:
 # Main
 # ============================================================
 if st.button("一括読み込み開始", type="primary"):
-    # API key
     api_key = None
     try:
         api_key = st.secrets["GOOGLE_API_KEY"]
@@ -419,7 +566,6 @@ if st.button("一括読み込み開始", type="primary"):
         st.error("⚠️ GOOGLE_API_KEY が設定されていません（st.secrets または環境変数）。")
         st.stop()
 
-    # targets
     targets = []
     for label in selected_presets:
         targets.append({"url": PRESET_URLS[label], "label": label})
@@ -453,7 +599,7 @@ if st.button("一括読み込み開始", type="primary"):
     # --------------------------------------------------------
     # 1) Collect article URLs from listings
     # --------------------------------------------------------
-    collected: List[Tuple[str, str]] = []  # (url, source_label)
+    collected: List[Tuple[str, str]] = []
     collected_seen: Set[str] = set()
     visited_listing: Set[str] = set()
 
@@ -483,14 +629,9 @@ if st.button("一括読み込み開始", type="primary"):
                 break
 
             soup = BeautifulSoup(html, "html.parser")
-
-            # 次ページ
             next_url = find_next_page_url(soup, current_url, rule)
-
-            # 記事URL抽出（厳密）
             links = extract_article_links_from_listing(soup, current_url, rule, link_limit=link_limit_per_page)
 
-            # 収集
             add_count = 0
             for u in links:
                 if u not in collected_seen:
@@ -502,7 +643,6 @@ if st.button("一括読み込み開始", type="primary"):
 
             if len(collected) >= max_articles_total:
                 break
-
             if not next_url:
                 break
 
@@ -526,13 +666,14 @@ if st.button("一括読み込み開始", type="primary"):
     status.info(f"🧠 記事ページ解析開始（総 {len(collected)} 件）")
     extracted_all: List[Dict] = []
 
-    # 重複除外を高速化
-    run_fingerprints: Set[Tuple[str, str]] = set()  # (name_norm, place_norm)
+    run_fingerprints: Set[Tuple[str, str]] = set()
 
     skipped_duplicate_csv = 0
     skipped_duplicate_run = 0
     failed_articles = 0
     non_article_skipped = 0
+    short_text_skipped = 0  # NEW
+    gemini_error_counter = {"count": 0}  # NEW
 
     for i, (article_url, label) in enumerate(collected, start=1):
         progress.progress(min(i / max(len(collected), 1), 1.0))
@@ -540,7 +681,6 @@ if st.button("一括読み込み開始", type="primary"):
 
         rule = get_site_rule(article_url)
 
-        # 最終ゲート：記事URLでなければ解析しない
         if not is_article_url(article_url, rule):
             non_article_skipped += 1
             continue
@@ -551,13 +691,47 @@ if st.button("一括読み込み開始", type="primary"):
             continue
 
         soup = BeautifulSoup(html, "html.parser")
+
+        release_date = extract_release_date(soup)
+        loc = extract_location_from_jsonld(soup)
+
         clean_soup(soup)
         text = extract_main_text(soup, rule)
 
-        # AI抽出
-        items = ai_extract_events_from_text(client, model_name, temperature, text, today)
+        # NEW: 本文が短すぎる場合は明示的にスキップとしてカウント
+        if not text or len(text) < 200:
+            short_text_skipped += 1
+            if debug_mode and i <= debug_show_articles:
+                st.warning(f"本文が短すぎてスキップ: len={len(text) if text else 0} url={article_url}")
+                st.write((text or "")[:500])
+            continue
+
+        if debug_mode and i <= debug_show_articles:
+            st.write(f"🧪 [debug] text length={len(text)} release_date={release_date}")
+            st.write("🧪 [debug] text head:", text[:500])
+            if loc.get("address") or loc.get("latitude") or loc.get("longitude"):
+                st.write("🧪 [debug] jsonld loc:", loc)
+
+        items = ai_extract_events_from_text(
+            client=client,
+            model_name=model_name,
+            temperature=temperature,
+            text=text,
+            today=today,
+            debug_mode=debug_mode and (i <= debug_show_articles),
+            gemini_error_counter=gemini_error_counter,
+        )
 
         for item in items:
+            item["release_date"] = release_date
+
+            if loc.get("address") and not item.get("address"):
+                item["address"] = loc["address"]
+            if loc.get("latitude") and not item.get("latitude"):
+                item["latitude"] = loc["latitude"]
+            if loc.get("longitude") and not item.get("longitude"):
+                item["longitude"] = loc["longitude"]
+
             n = normalize_string(item.get("name", ""))
             p = normalize_string(item.get("place", ""))
 
@@ -584,12 +758,21 @@ if st.button("一括読み込み開始", type="primary"):
 
     progress.empty()
 
+    # NEW: Geminiエラーがあったら目立つ警告
+    if gemini_error_counter.get("count", 0) > 0:
+        st.warning(
+            f"⚠️ Gemini呼び出しでエラーが {gemini_error_counter['count']} 回発生しました。"
+            f"（モデル名/APIキー権限/請求/クォータ/レート制限の可能性。デバッグモードONで詳細表示）"
+        )
+
     if not extracted_all:
         status.warning(
-            f"抽出結果が0件でした。\n"
+            f"抽出結果が0件でした。\n\n"
             f"- 記事失敗: {failed_articles}件\n"
             f"- 非記事URLスキップ: {non_article_skipped}件\n"
-            f"- CSV除外: {skipped_duplicate_csv}件"
+            f"- 本文短すぎスキップ: {short_text_skipped}件\n"
+            f"- CSV除外: {skipped_duplicate_csv}件\n"
+            f"- Geminiエラー: {gemini_error_counter.get('count', 0)}件"
         )
         st.session_state.extracted_data = None
         st.stop()
@@ -602,7 +785,9 @@ if st.button("一括読み込み開始", type="primary"):
         f"- CSV除外: {skipped_duplicate_csv}件\n"
         f"- 今回重複除外: {skipped_duplicate_run}件\n"
         f"- 非記事URLスキップ: {non_article_skipped}件\n"
-        f"- 記事失敗: {failed_articles}件"
+        f"- 本文短すぎスキップ: {short_text_skipped}件\n"
+        f"- 記事失敗: {failed_articles}件\n"
+        f"- Geminiエラー: {gemini_error_counter.get('count', 0)}件"
     )
 
 # ============================================================
@@ -614,22 +799,26 @@ if st.session_state.extracted_data:
     st.markdown(f"**取得件数: {len(df)}**（更新: {st.session_state.last_update}）")
 
     display_df = df.rename(columns={
+        "release_date": "リリース日",
         "date_info": "期間",
         "name": "イベント名",
         "place": "場所",
+        "address": "住所",
+        "latitude": "緯度",
+        "longitude": "経度",
         "description": "概要",
         "source_label": "情報源",
         "source_url": "URL"
     })
 
-    desired_cols = ["期間", "イベント名", "場所", "概要", "情報源", "URL"]
+    desired_cols = ["リリース日", "期間", "イベント名", "場所", "住所", "緯度", "経度", "概要", "情報源", "URL"]
     cols = [c for c in desired_cols if c in display_df.columns]
     display_df = display_df[cols]
 
     if "期間" in display_df.columns:
         try:
             display_df = display_df.sort_values("期間", na_position="last")
-        except:
+        except Exception:
             pass
 
     st.dataframe(
@@ -637,7 +826,7 @@ if st.session_state.extracted_data:
         use_container_width=True,
         column_config={
             "URL": st.column_config.LinkColumn("元記事", display_text="🔗 Link"),
-            "概要": st.column_config.TextColumn("概要", width="large")
+            "概要": st.column_config.TextColumn("概要", width="large"),
         },
         hide_index=True
     )
