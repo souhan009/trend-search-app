@@ -522,6 +522,45 @@ with st.sidebar:
     st.header("4. 既存CSVによる重複除外")
     uploaded_file = st.file_uploader("過去CSV（重複除外用）", type="csv")
 
+# ...（前略：サイドバーのコードの続き）
+    st.header("4. 既存CSVによる重複除外")
+    uploaded_file = st.file_uploader("過去CSV（重複除外用）", type="csv")
+
+    # ▼▼▼▼▼ ここから追加 ▼▼▼▼▼
+    st.divider()
+    st.header("🔍 モデル名診断")
+    if st.button("利用可能なモデル一覧を表示"):
+        api_key_check = None
+        try:
+            api_key_check = st.secrets["GOOGLE_API_KEY"]
+        except:
+            api_key_check = os.environ.get("GOOGLE_API_KEY")
+            
+        if not api_key_check:
+            st.error("APIキーが見つかりません。")
+        else:
+            try:
+                # 一時的なクライアントを作成してモデル一覧を取得
+                tmp_client = genai.Client(api_key=api_key_check)
+                # v1beta等のバージョン指定が必要な場合があるため、明示的にリスト取得
+                models_iter = tmp_client.models.list()
+                
+                valid_models = []
+                for m in models_iter:
+                    # コンテンツ生成（generateContent）に対応しているモデルのみ抽出
+                    methods = m.supported_generation_methods or []
+                    if "generateContent" in methods:
+                        # "models/" という接頭辞がついていることが多いので、それを除去して表示
+                        clean_name = m.name.replace("models/", "")
+                        valid_models.append(clean_name)
+                
+                st.success("取得成功！以下のモデル名をコピペして試してください。")
+                st.code("\n".join(sorted(valid_models)), language="text")
+                
+            except Exception as e:
+                st.error(f"一覧取得エラー: {e}")
+    # ▲▲▲▲▲ ここまで追加 ▲▲▲▲▲
+
 # ============================================================
 # Load existing fingerprints
 # ============================================================
