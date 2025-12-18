@@ -1,5 +1,7 @@
 streamlit
-pandas
-requests
-beautifulsoup4
 google-genai
+pandas
+pydeck
+beautifulsoup4
+requests
+selenium
