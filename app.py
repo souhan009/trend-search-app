@@ -5,7 +5,7 @@ import json
 import time
 import re
 import urllib.parse
-import csv  # 【追加】CSV保存用
+import csv
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional, Set, Any
 
@@ -333,6 +333,7 @@ def ai_extract_events_from_text(
 ) -> List[Dict]:
     all_items: List[Dict] = []
     
+    # ユーザーがUIで指定したモデル名がそのまま使われます
     for chunk in split_text_into_chunks(text, chunk_size=8000, overlap=400):
         if not chunk or len(chunk) < min_chunk_len:
             continue
@@ -368,7 +369,7 @@ def ai_extract_events_from_text(
         for attempt in range(max_retries + 1):
             try:
                 res = client.models.generate_content(
-                    model=model_name,
+                    model=model_name, # ここでUIの入力値が使われます
                     contents=prompt,
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
@@ -401,9 +402,10 @@ def ai_extract_events_from_text(
 
             except Exception as e:
                 err_str = str(e)
+                # 429エラーハンドリング
                 if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
                     if attempt < max_retries:
-                        wait_time = 15 * (attempt + 1) # 【変更】待機時間を少し長めに
+                        wait_time = 15 * (attempt + 1)
                         if debug_mode:
                             st.warning(f"⚠️ 429 Detected. Retrying in {wait_time}s... ({attempt + 1}/{max_retries})")
                         time.sleep(wait_time)
@@ -419,14 +421,15 @@ def ai_extract_events_from_text(
 
     return all_items
 
-# 【追加】1件をCSVに追記する関数
+# ------------------------------------------------------------
+# Append to CSV (Incremental Save)
+# ------------------------------------------------------------
 def append_to_csv(data: Dict, filename: str):
     fieldnames = [
         "release_date", "date_info", "name", "place", "address", 
         "latitude", "longitude", "description", "source_label", "source_url"
     ]
     file_exists = os.path.isfile(filename)
-    
     try:
         with open(filename, mode='a', encoding='utf-8_sig', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
@@ -460,7 +463,8 @@ with st.sidebar:
     
     st.divider()
     st.header("3. Gemini設定")
-    model_name = st.text_input("モデル名", value="gemini-1.5-flash") # 【推奨】1.5-flashをデフォルトに
+    # UI入力欄 (初期値は gemini-2.0-flash ですが、画面上で変更すればそれが使われます)
+    model_name = st.text_input("モデル名", value="gemini-2.0-flash") 
     temperature = st.slider("temperature", 0.0, 1.0, 0.0)
 
     st.divider()
@@ -498,11 +502,10 @@ if uploaded_file:
 
 if "extracted_data" not in st.session_state: st.session_state.extracted_data = None
 
-# 自動保存するファイル名
 PROGRESSIVE_CSV = "progressive_results.csv"
 
 if st.button("一括読み込み開始", type="primary"):
-    # スタート時に古い一時ファイルを消すかどうか（好みでコメントアウトしてください）
+    # 既存の一時ファイルを削除（リセット）
     if os.path.exists(PROGRESSIVE_CSV):
         try:
             os.remove(PROGRESSIVE_CSV)
@@ -569,7 +572,7 @@ if st.button("一括読み込み開始", type="primary"):
     
     for i, (url, label) in enumerate(collected):
         progress.progress((i+1) / len(collected))
-        status.info(f"🧠 解析中 ({i+1}/{len(collected)}): {url}")
+        status.info(f"🧠 解析中 ({i+1}/{len(collected)}) モデル: {model_name} | URL: {url}")
         
         rule = get_site_rule(url)
         if not is_article_url(url, rule): continue
@@ -605,7 +608,6 @@ if st.button("一括読み込み開始", type="primary"):
             item["source_label"] = label
             item["source_url"] = url
             
-            # 【重要変更点】メモリに追加するだけでなく、CSVにも即時書き込む
             extracted_all.append(item)
             append_to_csv(item, PROGRESSIVE_CSV)
         
@@ -615,7 +617,6 @@ if st.button("一括読み込み開始", type="primary"):
     st.session_state.last_update = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     status.success(f"完了! {len(extracted_all)}件抽出。ファイル: {PROGRESSIVE_CSV}")
 
-# 結果表示（CSVから読み直しても良いが、ここではメモリ上のものを表示）
 if st.session_state.extracted_data:
     df = pd.DataFrame(st.session_state.extracted_data)
     
@@ -635,10 +636,8 @@ if st.session_state.extracted_data:
     st.dataframe(display_df, use_container_width=True, hide_index=True,
                  column_config={"URL": st.column_config.LinkColumn("Link")})
     
-    # 完了時のダウンロードボタン
     st.download_button("結果CSVをDL", display_df.to_csv(index=False).encode("utf-8_sig"), "events_final.csv")
     
-    # 途中経過ファイルのDLボタンも置いておく
     if os.path.exists(PROGRESSIVE_CSV):
         with open(PROGRESSIVE_CSV, "rb") as f:
             st.download_button("途中経過CSVをDL", f, file_name="events_progressive.csv")
