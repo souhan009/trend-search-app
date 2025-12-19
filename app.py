@@ -5,6 +5,7 @@ import json
 import time
 import re
 import urllib.parse
+import csv  # 【追加】CSV保存用
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional, Set, Any
 
@@ -19,11 +20,11 @@ from google.genai import types
 # ============================================================
 # Streamlit config
 # ============================================================
-st.set_page_config(page_title="イベント情報抽出（安定版）", page_icon="📖", layout="wide")
-st.title("📖 イベント情報抽出アプリ（安定版）")
+st.set_page_config(page_title="イベント情報抽出（自動保存版）", page_icon="💾", layout="wide")
+st.title("💾 イベント情報抽出アプリ（自動保存版）")
 st.markdown("""
-**AI × スマートクローリング（安定版）** 一覧ページから記事URLを厳密に抽出 → 本文をAI解析 → 重複除外して一覧化。  
-※バッチ処理を含まない、1件ずつ確実に処理するバージョンです。
+**AI × スマートクローリング（途中保存対応）** 1件抽出するごとに、自動的に `progressive_results.csv` に保存します。  
+途中でエラー停止しても、そこまでのデータは確保されます。
 """)
 
 # ============================================================
@@ -402,7 +403,7 @@ def ai_extract_events_from_text(
                 err_str = str(e)
                 if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
                     if attempt < max_retries:
-                        wait_time = 10 * (attempt + 1)
+                        wait_time = 15 * (attempt + 1) # 【変更】待機時間を少し長めに
                         if debug_mode:
                             st.warning(f"⚠️ 429 Detected. Retrying in {wait_time}s... ({attempt + 1}/{max_retries})")
                         time.sleep(wait_time)
@@ -417,6 +418,23 @@ def ai_extract_events_from_text(
                     break
 
     return all_items
+
+# 【追加】1件をCSVに追記する関数
+def append_to_csv(data: Dict, filename: str):
+    fieldnames = [
+        "release_date", "date_info", "name", "place", "address", 
+        "latitude", "longitude", "description", "source_label", "source_url"
+    ]
+    file_exists = os.path.isfile(filename)
+    
+    try:
+        with open(filename, mode='a', encoding='utf-8_sig', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+            if not file_exists:
+                writer.writeheader()
+            writer.writerow(data)
+    except Exception as e:
+        print(f"CSV Write Error: {e}")
 
 # ============================================================
 # Sidebar UI
@@ -438,11 +456,11 @@ with st.sidebar:
     max_pages = st.slider("一覧の最大ページ数", 1, 30, 6)
     link_limit_per_page = st.slider("1ページあたり収集URL上限", 10, 300, 80)
     max_articles_total = st.slider("総記事数の上限", 20, 2000, 400, step=20)
-    sleep_sec = st.slider("アクセス間隔（秒）", 0.0, 30.0, 10.0, step=1.0)
+    sleep_sec = st.slider("アクセス間隔（秒）", 0.0, 30.0, 5.0, step=1.0)
     
     st.divider()
     st.header("3. Gemini設定")
-    model_name = st.text_input("モデル名", value="gemini-2.0-flash-lite")
+    model_name = st.text_input("モデル名", value="gemini-1.5-flash") # 【推奨】1.5-flashをデフォルトに
     temperature = st.slider("temperature", 0.0, 1.0, 0.0)
 
     st.divider()
@@ -480,7 +498,16 @@ if uploaded_file:
 
 if "extracted_data" not in st.session_state: st.session_state.extracted_data = None
 
+# 自動保存するファイル名
+PROGRESSIVE_CSV = "progressive_results.csv"
+
 if st.button("一括読み込み開始", type="primary"):
+    # スタート時に古い一時ファイルを消すかどうか（好みでコメントアウトしてください）
+    if os.path.exists(PROGRESSIVE_CSV):
+        try:
+            os.remove(PROGRESSIVE_CSV)
+        except: pass
+
     today = datetime.date.today()
     api_key = os.environ.get("GOOGLE_API_KEY") or st.secrets.get("GOOGLE_API_KEY")
     if not api_key:
@@ -538,7 +565,7 @@ if st.button("一括読み込み開始", type="primary"):
     run_fingerprints = set()
     gemini_error_counter = {"count": 0}
     
-    status.info(f"🧠 記事解析開始: {len(collected)}件")
+    status.info(f"🧠 記事解析開始: {len(collected)}件 -> 結果は {PROGRESSIVE_CSV} に自動保存されます")
     
     for i, (url, label) in enumerate(collected):
         progress.progress((i+1) / len(collected))
@@ -577,14 +604,18 @@ if st.button("一括読み込み開始", type="primary"):
             
             item["source_label"] = label
             item["source_url"] = url
+            
+            # 【重要変更点】メモリに追加するだけでなく、CSVにも即時書き込む
             extracted_all.append(item)
+            append_to_csv(item, PROGRESSIVE_CSV)
         
         time.sleep(sleep_sec)
             
     st.session_state.extracted_data = extracted_all
     st.session_state.last_update = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    status.success(f"完了! {len(extracted_all)}件抽出")
+    status.success(f"完了! {len(extracted_all)}件抽出。ファイル: {PROGRESSIVE_CSV}")
 
+# 結果表示（CSVから読み直しても良いが、ここではメモリ上のものを表示）
 if st.session_state.extracted_data:
     df = pd.DataFrame(st.session_state.extracted_data)
     
@@ -603,4 +634,11 @@ if st.session_state.extracted_data:
     
     st.dataframe(display_df, use_container_width=True, hide_index=True,
                  column_config={"URL": st.column_config.LinkColumn("Link")})
-    st.download_button("CSV DL", display_df.to_csv(index=False).encode("utf-8_sig"), "events_stable.csv")
+    
+    # 完了時のダウンロードボタン
+    st.download_button("結果CSVをDL", display_df.to_csv(index=False).encode("utf-8_sig"), "events_final.csv")
+    
+    # 途中経過ファイルのDLボタンも置いておく
+    if os.path.exists(PROGRESSIVE_CSV):
+        with open(PROGRESSIVE_CSV, "rb") as f:
+            st.download_button("途中経過CSVをDL", f, file_name="events_progressive.csv")
