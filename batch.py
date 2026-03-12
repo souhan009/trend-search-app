@@ -23,7 +23,7 @@ from google.genai import types
 # ============================================================
 RSS_URL = "https://prtimes.jp/index.rdf"
 OUTPUT_CSV = "auto_results.csv"
-MODEL_NAME = "gemini-2.5-flash"
+MODEL_NAME = "gemini-2.0-flash"
 TEMPERATURE = 0.0
 
 # 取得対象カテゴリーのキーワード（Gemini判定用）
