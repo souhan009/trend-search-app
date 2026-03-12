@@ -468,6 +468,12 @@ with st.sidebar:
     temperature = st.slider("temperature", 0.0, 1.0, 0.0)
 
     st.divider()
+    st.header("🔍 URL数確認モード")
+    url_count_mode = st.checkbox("URL数確認モード（API消費を最小化）", value=False)
+    if url_count_mode:
+        st.info("ONにすると、AI解析を1件だけ実行して止まります。\n「解析中 (1/Y)」のYが取得できたURL総数です。")
+
+    st.divider()
     st.header("🐞 デバッグ")
     debug_mode = st.checkbox("デバッグモード", value=False)
     debug_show_articles = st.slider("デバッグ表示する記事数", 1, 10, 3)
@@ -523,7 +529,11 @@ if st.button("一括読み込み開始", type="primary"):
             if u.strip().startswith("http"): targets.append({"url": u.strip(), "label": "Custom"})
     
     if not targets: st.error("URLなし"); st.stop()
-    
+
+    if url_count_mode:
+        max_articles_total = 1
+        st.info("🔍 URL数確認モードON：AI解析は1件のみ実行します。")
+
     client = genai.Client(api_key=api_key)
     session = requests.Session()
     session.headers.update({"User-Agent": "Mozilla/5.0"})
