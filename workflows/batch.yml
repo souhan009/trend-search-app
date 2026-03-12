@@ -6,6 +6,9 @@ on:
     - cron: "0 18,0,6,12 * * *"
   workflow_dispatch:  # 手動実行も可能
 
+permissions:
+  contents: write  # CSVをコミット・プッシュするために必要
+
 jobs:
   batch:
     runs-on: ubuntu-latest
@@ -13,6 +16,8 @@ jobs:
     steps:
       - name: リポジトリをチェックアウト
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Pythonをセットアップ
         uses: actions/setup-python@v5
