@@ -464,7 +464,7 @@ with st.sidebar:
     st.divider()
     st.header("3. Gemini設定")
     # UI入力欄 (初期値は gemini-2.0-flash ですが、画面上で変更すればそれが使われます)
-    model_name = st.text_input("モデル名", value="gemini-2.0-flash") 
+    model_name = st.text_input("モデル名", value="gemini-2.5-flash") 
     temperature = st.slider("temperature", 0.0, 1.0, 0.0)
 
     st.divider()
