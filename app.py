@@ -456,9 +456,9 @@ with st.sidebar:
 
     st.divider()
     st.header("2. 探索設定")
-    max_pages = st.slider("一覧の最大ページ数", 1, 30, 6)
-    link_limit_per_page = st.slider("1ページあたり収集URL上限", 10, 300, 80)
-    max_articles_total = st.slider("総記事数の上限", 20, 2000, 400, step=20)
+    max_pages = st.slider("一覧の最大ページ数", 1, 5, 3)
+    link_limit_per_page = st.slider("1ページあたり収集URL上限", 10, 50, 30)
+    max_articles_total = st.slider("総記事数の上限", 10, 100, 50, step=10)
     sleep_sec = st.slider("アクセス間隔（秒）", 0.0, 30.0, 5.0, step=1.0)
     
     st.divider()
