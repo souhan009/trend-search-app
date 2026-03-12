@@ -625,7 +625,7 @@ if st.button("一括読み込み開始", type="primary"):
             
     st.session_state.extracted_data = extracted_all
     st.session_state.last_update = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    status.success(f"完了! {len(extracted_all)}件抽出。ファイル: {PROGRESSIVE_CSV}")
+    status.success(f"完了! {len(extracted_all)}件抽出。取得できたURL総数: {len(collected)}件。ファイル: {PROGRESSIVE_CSV}")
 
 if st.session_state.extracted_data:
     df = pd.DataFrame(st.session_state.extracted_data)
