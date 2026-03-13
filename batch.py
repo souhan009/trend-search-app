@@ -1,6 +1,6 @@
 """
-batch.py
-RSS取得 → Geminiでカテゴリー判定 → 詳細抽出 → CSVに追記
+batch.py v2
+RSS取得 → Geminiでカテゴリー判定（50件分割）→ 詳細抽出 → CSVに追記
 GitHub Actionsから定期実行される
 """
 
@@ -280,6 +280,7 @@ def ai_extract_events(client, text: str, today: datetime.date) -> List[Dict]:
 # メイン処理
 # ============================================================
 def main():
+    print("=== batch.py v2 (50件分割版) ===")
     api_key = os.environ.get("GOOGLE_API_KEY")
     if not api_key:
         print("ERROR: GOOGLE_API_KEY が設定されていません")
