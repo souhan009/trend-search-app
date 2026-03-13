@@ -87,17 +87,17 @@ with st.sidebar:
 # メインエリア：テーブル表示
 # ============================================================
 st.subheader("📋 全データ一覧")
-    df = load_csv(AUTO_CSV)
-    if not df.empty:
-        st.caption(f"総件数: {len(df)}件")
-        show_table(df)
-        st.download_button(
-            label="📥 CSVダウンロード",
-            data=df.to_csv(index=False, encoding="utf-8-sig"),
-            file_name="all_results.csv",
-            mime="text/csv",
-        )
-    else:
-        st.info("auto_results.csv がまだありません。バッチを実行してください。")
+df = load_csv(AUTO_CSV)
+if not df.empty:
+    st.caption(f"総件数: {len(df)}件")
+    show_table(df)
+    st.download_button(
+        label="📥 CSVダウンロード",
+        data=df.to_csv(index=False, encoding="utf-8-sig"),
+        file_name="all_results.csv",
+        mime="text/csv",
+    )
+else:
+    st.info("all_results.csv がまだありません。バッチを実行してください。")
 
 
