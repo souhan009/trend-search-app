@@ -128,26 +128,21 @@ def fetch_rss(url: str) -> List[Dict]:
 # ============================================================
 # Gemini: カテゴリー判定（一括・軽量）
 # ============================================================
-def ai_filter_relevant_items(client, items: List[Dict]) -> List[Dict]:
-    """タイトルと概要をまとめてGeminiに渡し、関連記事だけを返す"""
-    if not items:
-        return []
-
-    # タイトル+概要をまとめてリスト化
+def ai_filter_chunk(client, chunk: List[Dict], offset: int) -> List[int]:
+    """チャンク単位でカテゴリー判定し、該当する元のインデックスを返す"""
     lines = []
-    for i, item in enumerate(items):
+    for i, item in enumerate(chunk):
         lines.append(f"{i}: {item['title']} / {item['description'][:80]}")
     combined = "\n".join(lines)
 
-    prompt = f"""
-以下はプレスリリースの一覧です。
+    prompt = f"""以下はプレスリリースの一覧です。
 各行の形式は「番号: タイトル / 本文冒頭」です。
 
 【対象カテゴリー】
-グルメ、飲食店、レストラン、カフェ、イベント、新規オープン、新メニュー、料理、食品、スイーツ
+グルメ、飲食店、レストラン、カフェ、イベント、新規オープン、新メニュー、料理、食品、スイーツ、飲み物、お酒、ホテル
 
-上記カテゴリーに関連する記事の番号だけをJSON配列で返してください。
-例: [0, 3, 7, 12]
+上記カテゴリーに少しでも関連する記事の番号をJSON配列で返してください。
+迷った場合は含めてください。該当なしの場合は [] を返してください。
 番号以外は一切出力しないでください。
 
 一覧:
@@ -165,9 +160,7 @@ def ai_filter_relevant_items(client, items: List[Dict]) -> List[Dict]:
                 )
             )
             indices = safe_json_parse(res.text)
-            relevant = [items[i] for i in indices if isinstance(i, int) and 0 <= i < len(items)]
-            print(f"カテゴリー判定: {len(items)}件中 {len(relevant)}件が該当")
-            return relevant
+            return [offset + i for i in indices if isinstance(i, int) and 0 <= i < len(chunk)]
         except Exception as e:
             err_str = str(e)
             if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
@@ -179,6 +172,23 @@ def ai_filter_relevant_items(client, items: List[Dict]) -> List[Dict]:
             print(f"カテゴリー判定エラー: {e}")
             break
     return []
+
+def ai_filter_relevant_items(client, items: List[Dict]) -> List[Dict]:
+    """50件ずつに分割してGeminiに渡し、関連記事だけを返す"""
+    if not items:
+        return []
+
+    chunk_size = 50
+    all_indices = []
+    for offset in range(0, len(items), chunk_size):
+        chunk = items[offset:offset + chunk_size]
+        indices = ai_filter_chunk(client, chunk, offset)
+        all_indices.extend(indices)
+        time.sleep(2)
+
+    relevant = [items[i] for i in all_indices if 0 <= i < len(items)]
+    print(f"カテゴリー判定: {len(items)}件中 {len(relevant)}件が該当")
+    return relevant
 
 # ============================================================
 # Gemini: 詳細抽出（1記事ずつ）
