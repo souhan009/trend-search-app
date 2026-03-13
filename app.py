@@ -28,7 +28,7 @@ def load_csv(filepath: str) -> pd.DataFrame:
     if not os.path.isfile(filepath):
         return pd.DataFrame()
     try:
-        df = pd.read_csv(filepath, encoding="utf-8-sig")
+        df = pd.read_csv(filepath, encoding="utf-16")
         return df
     except Exception as e:
         st.error(f"CSVの読み込みエラー: {e}")
@@ -81,8 +81,6 @@ with st.sidebar:
 
     st.divider()
 
-    view_mode = "全データ（auto_results）"
-
 # ============================================================
 # メインエリア：テーブル表示
 # ============================================================
@@ -93,7 +91,7 @@ if not df.empty:
     show_table(df)
     st.download_button(
         label="📥 CSVダウンロード",
-        data=df.to_csv(index=False, encoding="utf-8-sig"),
+        data=df.to_csv(index=False, encoding="utf-16").encode("utf-16"),
         file_name="all_results.csv",
         mime="text/csv",
     )
