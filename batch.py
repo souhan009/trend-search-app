@@ -306,11 +306,6 @@ def main():
         print("該当する記事がありませんでした")
         return
 
-    # 差分ファイル名をタイムスタンプ付きで生成
-    jst = datetime.timezone(datetime.timedelta(hours=9))
-    timestamp = datetime.datetime.now(jst).strftime("%Y%m%d%H%M%S")
-    diff_csv = f"results/diff_results_{timestamp}.csv"
-
     # 3. 各記事を詳細解析
     new_count = 0
     for i, item in enumerate(relevant_items):
@@ -334,12 +329,11 @@ def main():
             event["release_date"] = normalize_date(item["date"])
             event["source_url"] = item["link"]
             append_to_csv(event, OUTPUT_CSV)   # 蓄積ファイルに追記
-            append_to_csv(event, diff_csv)     # 差分ファイルにも追記
             new_count += 1
 
         time.sleep(3)  # アクセス間隔
 
-    print(f"完了！新規追加: {new_count}件 → {OUTPUT_CSV} / 差分: {diff_csv}")
+    print(f"完了！新規追加: {new_count}件 → {OUTPUT_CSV}")
 
 if __name__ == "__main__":
     main()
