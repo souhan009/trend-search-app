@@ -85,12 +85,25 @@ def load_existing_fingerprints(filename: str) -> set:
         print(f"CSV読み込みエラー: {e}")
     return fps
 
+def get_next_no(filename: str) -> int:
+    """現在のCSVの最大No+1を返す"""
+    if not os.path.isfile(filename):
+        return 1
+    try:
+        with open(filename, encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            nos = [int(row["No"]) for row in reader if row.get("No", "").isdigit()]
+            return max(nos) + 1 if nos else 1
+    except Exception:
+        return 1
+
 def append_to_csv(data: Dict, filename: str):
     fieldnames = [
-        "release_date", "date_info", "name", "place", "address",
+        "No", "release_date", "date_info", "name", "place", "address",
         "latitude", "longitude", "description", "source_url"
     ]
     file_exists = os.path.isfile(filename)
+    data["No"] = get_next_no(filename)
     try:
         with open(filename, mode="a", encoding="utf-8-sig", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
