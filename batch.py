@@ -159,7 +159,9 @@ def ai_filter_chunk(client, chunk: List[Dict], offset: int) -> List[int]:
                     temperature=0.0
                 )
             )
+            print(f"Gemini応答: {res.text[:200]}")
             indices = safe_json_parse(res.text)
+            print(f"パース結果: {indices[:10]}")
             return [offset + i for i in indices if isinstance(i, int) and 0 <= i < len(chunk)]
         except Exception as e:
             err_str = str(e)
