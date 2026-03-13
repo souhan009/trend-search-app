@@ -38,16 +38,11 @@ def show_table(df: pd.DataFrame):
         st.info("データがありません。")
         return
     col_map = {
-        "No": "No",
-        "release_date": "リリース日",
-        "date_info": "イベント日程",
-        "name": "イベント名",
-        "place": "場所",
-        "address": "住所",
-        "latitude": "緯度",
-        "longitude": "経度",
-        "description": "概要",
-        "source_url": "ソースURL",
+        "ID": "ID",
+        "url": "URL",
+        "h1": "H1",
+        "h2": "H2",
+        "crawled_at": "取得日時",
     }
     df_display = df.rename(columns=col_map)
     st.dataframe(df_display, use_container_width=True, height=500)
