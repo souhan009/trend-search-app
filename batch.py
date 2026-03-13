@@ -37,6 +37,12 @@ def normalize_date(text: str) -> str:
     if not text or not isinstance(text, str):
         return ""
     t = text.strip()
+    # 日時パターン: 2026-03-13T08:12:39+09:00 など
+    m = re.search(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})[T ](\d{2}):(\d{2})", t)
+    if m:
+        y, mo, d, hh, mm = m.group(1), m.group(2).zfill(2), m.group(3).zfill(2), m.group(4), m.group(5)
+        return f"{y}年{mo}月{d}日 {hh}:{mm}"
+    # 日付のみのパターン
     m = re.search(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", t)
     if m:
         y, mo, d = m.group(1), m.group(2).zfill(2), m.group(3).zfill(2)
