@@ -86,7 +86,7 @@ def append_to_csv(data: Dict, filename: str):
     ]
     file_exists = os.path.isfile(filename)
     try:
-        with open(filename, mode="a", encoding="utf-8-sig", newline="") as f:
+        with open(filename, mode="a", encoding="utf-16", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
             if not file_exists:
                 writer.writeheader()
