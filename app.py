@@ -42,12 +42,14 @@ def get_diff_files() -> list:
     return files
 
 def format_diff_label(filepath: str) -> str:
-    """ファイル名からタイムスタンプを読みやすい形式に変換"""
+    """ファイル名からタイムスタンプを読みやすい形式に変換（UTC→JST変換）"""
+    from datetime import timezone, timedelta
     basename = os.path.basename(filepath)
     try:
         ts = basename.replace("diff_results_", "").replace(".csv", "")
-        dt = datetime.strptime(ts, "%Y%m%d%H%M%S")
-        return dt.strftime("%Y-%m-%d %H:%M:%S")
+        dt_utc = datetime.strptime(ts, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+        dt_jst = dt_utc.astimezone(timezone(timedelta(hours=9)))
+        return dt_jst.strftime("%Y-%m-%d %H:%M:%S JST")
     except Exception:
         return basename
 
@@ -86,7 +88,7 @@ with st.sidebar:
                 env = os.environ.copy()
                 env["GOOGLE_API_KEY"] = api_key
                 result = subprocess.run(
-                    ["python", "batch.py"],
+                    [os.sys.executable, "batch.py"],
                     capture_output=True, text=True, env=env
                 )
             if result.returncode == 0:
