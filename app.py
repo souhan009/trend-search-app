@@ -69,7 +69,7 @@ if not df.empty:
     show_table(df)
     st.download_button(
         label="📥 CSVダウンロード",
-        data=df.to_csv(index=False).encode("utf-16"),
+        data=df.to_csv(index=False, sep="\t").encode("utf-16"),
         file_name="all_results.csv",
         mime="text/csv",
     )
