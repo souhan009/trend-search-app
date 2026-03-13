@@ -3,7 +3,7 @@ name: RSS自動取得バッチ
 on:
   schedule:
     # 日本時間 3時・9時・15時・21時に実行（UTCで-9時間）
-    - cron: "0 18,0,6,12 * * *"
+    - cron: "0 */2 * * *"
   workflow_dispatch:  # 手動実行も可能
 
 permissions:
@@ -26,11 +26,9 @@ jobs:
 
       - name: 依存パッケージをインストール
         run: |
-          pip install requests google-genai beautifulsoup4
+          pip install requests beautifulsoup4
 
       - name: バッチ処理を実行
-        env:
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: python batch.py
 
       - name: 結果CSVをコミット・プッシュ
