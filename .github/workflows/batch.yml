@@ -2,11 +2,12 @@ name: RSS自動取得バッチ
 
 on:
   schedule:
+    # 日本時間 3時・9時・15時・21時に実行（UTCで-9時間）
     - cron: "0 18,0,6,12 * * *"
-  workflow_dispatch:
+  workflow_dispatch:  # 手動実行も可能
 
 permissions:
-  contents: write
+  contents: write  # CSVをコミット・プッシュするために必要
 
 jobs:
   batch:
@@ -36,6 +37,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add auto_results.csv
+          git add auto_results.csv diff_results_*.csv
           git diff --cached --quiet || git commit -m "自動更新: $(date +'%Y-%m-%d %H:%M') JST"
           git push
