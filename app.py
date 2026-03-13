@@ -38,6 +38,7 @@ def show_table(df: pd.DataFrame):
         st.info("データがありません。")
         return
     col_map = {
+        "No": "No",
         "release_date": "リリース日",
         "date_info": "イベント日程",
         "name": "イベント名",
