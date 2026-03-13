@@ -9,7 +9,6 @@ app.py v2
 import streamlit as st
 import pandas as pd
 import os
-import subprocess
 from datetime import datetime
 
 # ============================================================
@@ -58,28 +57,7 @@ def show_table(df: pd.DataFrame):
 with st.sidebar:
     st.header("⚙️ 操作パネル")
 
-    # 手動バッチ実行
-    st.subheader("🔄 バッチ実行")
-    if st.button("今すぐ最新データを取得", type="primary", use_container_width=True):
-        api_key = st.secrets.get("GOOGLE_API_KEY", "")
-        if not api_key:
-            st.error("GOOGLE_API_KEY が設定されていません")
-        else:
-            with st.spinner("バッチ処理を実行中..."):
-                env = os.environ.copy()
-                env["GOOGLE_API_KEY"] = api_key
-                result = subprocess.run(
-                    [os.sys.executable, "batch.py"],
-                    capture_output=True, text=True, env=env
-                )
-            if result.returncode == 0:
-                st.success("完了しました！")
-                st.text(result.stdout[-1000:])
-            else:
-                st.error("エラーが発生しました")
-                st.text(result.stderr[-500:])
 
-    st.divider()
 
 # ============================================================
 # メインエリア：テーブル表示
