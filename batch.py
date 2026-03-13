@@ -182,7 +182,9 @@ def ai_filter_relevant_items(client, items: List[Dict]) -> List[Dict]:
 
     chunk_size = 50
     all_indices = []
+    print(f"分割処理開始: {len(items)}件を{chunk_size}件ずつ処理")
     for offset in range(0, len(items), chunk_size):
+        print(f"チャンク処理中: offset={offset}")
         chunk = items[offset:offset + chunk_size]
         indices = ai_filter_chunk(client, chunk, offset)
         all_indices.extend(indices)
