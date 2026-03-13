@@ -22,7 +22,7 @@ from google.genai import types
 # 設定
 # ============================================================
 RSS_URL = "https://prtimes.jp/index.rdf"
-OUTPUT_CSV = "auto_results.csv"
+OUTPUT_CSV = "results/auto_results.csv"
 # DIFF_CSVはmain()内でタイムスタンプ付きで生成
 MODEL_NAME = "gemini-2.0-flash"
 TEMPERATURE = 0.0
@@ -308,7 +308,7 @@ def main():
 
     # 差分ファイル名をタイムスタンプ付きで生成
     timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-    diff_csv = f"diff_results_{timestamp}.csv"
+    diff_csv = f"results/diff_results_{timestamp}.csv"
 
     # 3. 各記事を詳細解析
     new_count = 0
