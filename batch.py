@@ -307,7 +307,8 @@ def main():
         return
 
     # 差分ファイル名をタイムスタンプ付きで生成
-    timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+    jst = datetime.timezone(datetime.timedelta(hours=9))
+    timestamp = datetime.datetime.now(jst).strftime("%Y%m%d%H%M%S")
     diff_csv = f"results/diff_results_{timestamp}.csv"
 
     # 3. 各記事を詳細解析
