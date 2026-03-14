@@ -62,6 +62,20 @@ TARGETS = [
 # ============================================================
 # ユーティリティ
 # ============================================================
+def normalize_datetime(text: str) -> str:
+    """リリース日時を「2026年03月14日 12:05」形式に統一"""
+    if not text:
+        return ""
+    # 2026-03-14 08:37:16 形式（PRTIMES）
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})", text)
+    if m:
+        return f"{m.group(1)}年{m.group(2)}月{m.group(3)}日 {m.group(4)}:{m.group(5)}"
+    # 2026年3月14日 18:00 形式（アットプレス）
+    m = re.match(r"(\d{4})年(\d{1,2})月(\d{1,2})日\s+(\d{2}):(\d{2})", text)
+    if m:
+        return f"{m.group(1)}年{m.group(2).zfill(2)}月{m.group(3).zfill(2)}日 {m.group(4)}:{m.group(5)}"
+    return text
+
 def get_jst_now() -> datetime.datetime:
     jst = datetime.timezone(datetime.timedelta(hours=9))
     return datetime.datetime.now(jst)
@@ -201,7 +215,7 @@ def main():
                 "site":       target["site"],
                 "genre":      target["genre"],
                 "url":        url,
-                "datetime":   detail["datetime"],
+                "datetime":   normalize_datetime(detail["datetime"]),
                 "h1":         detail["h1"],
                 "h2":         detail["h2"],
                 "crawled_at": crawled_at,
