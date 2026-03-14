@@ -62,7 +62,7 @@ def get_next_id(filename: str) -> int:
         return 1
 
 def append_to_csv(data: Dict, filename: str):
-    fieldnames = ["ID", "url", "h1", "h2", "crawled_at"]
+    fieldnames = ["ID", "url", "datetime", "h1", "h2", "crawled_at"]
     file_exists = os.path.isfile(filename)
     try:
         with open(filename, mode="a", encoding="utf-8-sig", newline="") as f:
@@ -111,7 +111,10 @@ def fetch_article_detail(url: str) -> Dict:
         h2 = soup.find("h2")
         h2_text = h2.get_text(strip=True) if h2 else ""
 
-        return {"h1": h1_text, "h2": h2_text}
+        time_tag = soup.find("time", attrs={"datetime": True})
+        datetime_text = time_tag["datetime"] if time_tag else ""
+
+        return {"h1": h1_text, "h2": h2_text, "datetime": datetime_text}
     except Exception as e:
         print(f"記事取得エラー {url}: {e}")
         return {"h1": "", "h2": ""}
@@ -150,6 +153,7 @@ def main():
         data = {
             "ID": next_id,
             "url": url,
+            "datetime": detail["datetime"],
             "h1": detail["h1"],
             "h2": detail["h2"],
             "crawled_at": crawled_at,
