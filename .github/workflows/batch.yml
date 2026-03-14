@@ -9,6 +9,9 @@ on:
 permissions:
   contents: write  # CSVをコミット・プッシュするために必要
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   batch:
     runs-on: ubuntu-latest
