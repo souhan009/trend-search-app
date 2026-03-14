@@ -46,7 +46,14 @@ def show_table(df: pd.DataFrame):
         "crawled_at": "取得日時",
     }
     df_display = df.rename(columns=col_map)
-    st.dataframe(df_display, use_container_width=True, height=500)
+    st.dataframe(
+        df_display,
+        use_container_width=True,
+        height=500,
+        column_config={
+            "URL": st.column_config.LinkColumn("URL", display_text="開く")
+        }
+    )
 
 # ============================================================
 # サイドバー：操作パネル
