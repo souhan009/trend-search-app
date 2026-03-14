@@ -39,6 +39,8 @@ def show_table(df: pd.DataFrame):
         return
     col_map = {
         "ID": "ID",
+        "site": "サイト",
+        "genre": "ジャンル",
         "url": "URL",
         "datetime": "リリース日時",
         "h1": "H1",
