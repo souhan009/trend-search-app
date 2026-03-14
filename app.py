@@ -40,6 +40,7 @@ def show_table(df: pd.DataFrame):
     col_map = {
         "ID": "ID",
         "url": "URL",
+        "datetime": "リリース日時",
         "h1": "H1",
         "h2": "H2",
         "crawled_at": "取得日時",
