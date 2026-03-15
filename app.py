@@ -71,14 +71,18 @@ with st.sidebar:
 st.subheader("📋 全データ一覧")
 df = load_csv(AUTO_CSV)
 if not df.empty:
-    st.caption(f"総件数: {len(df)}件")
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.caption(f"総件数: {len(df)}件")
+    with col2:
+        st.download_button(
+            label="📥 CSVダウンロード",
+            data=df.to_csv(index=False, sep="\t").encode("utf-16"),
+            file_name="all_results.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
     show_table(df)
-    st.download_button(
-        label="📥 CSVダウンロード",
-        data=df.to_csv(index=False, sep="\t").encode("utf-16"),
-        file_name="all_results.csv",
-        mime="text/csv",
-    )
 else:
     st.info("all_results.csv がまだありません。バッチを実行してください。")
 
