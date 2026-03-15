@@ -22,7 +22,7 @@ from google.genai import types
 OUTPUT_CSV = "results/all_results.csv"
 ACCESS_INTERVAL = 2  # 秒
 MODEL_NAME = "gemini-2.0-flash"
-TEST_MODE = True   # ← Trueで10件取得後に終了、本番運用時はFalseに
+TEST_MODE = False  # ← Trueで10件取得後に終了、本番運用時はFalseに
 TEST_LIMIT = 10
 
 TARGETS = [
