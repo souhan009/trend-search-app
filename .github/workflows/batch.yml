@@ -29,9 +29,11 @@ jobs:
 
       - name: 依存パッケージをインストール
         run: |
-          pip install requests beautifulsoup4
+          pip install requests beautifulsoup4 google-genai
 
       - name: バッチ処理を実行
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: python batch.py
 
       - name: 結果CSVをコミット・プッシュ
