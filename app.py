@@ -45,13 +45,6 @@ def show_table(df: pd.DataFrame):
         "datetime": "リリース日時",
         "h1": "H1",
         "h2": "H2",
-        "event_date": "開催日時",
-        "venue": "会場名",
-        "address": "住所",
-        "fee": "参加費・料金",
-        "note": "その他",
-        "info": "基本情報",
-        "official": "公式URL等",
         "crawled_at": "取得日時",
     }
     df_display = df.rename(columns=col_map)
