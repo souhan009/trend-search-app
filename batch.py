@@ -112,6 +112,7 @@ def append_to_csv(data: Dict, filename: str):
     fieldnames = [
         "ID", "site", "genre", "url", "datetime",
         "h1", "h2", "event_date", "venue", "address", "fee", "note",
+        "info", "official",
         "crawled_at"
     ]
     file_exists = os.path.isfile(filename)
@@ -205,19 +206,22 @@ def fetch_article_detail(url: str, parser: str) -> Dict:
 # Gemini: 記事本文から情報抽出
 # ============================================================
 def ai_extract_info(client, body_text: str) -> Dict:
+    empty = {"event_date": "", "venue": "", "address": "", "fee": "", "note": "", "info": "", "official": ""}
     if not body_text:
-        return {"event_date": "", "venue": "", "address": "", "fee": "", "note": ""}
+        return empty
 
-    prompt = f"""以下のプレスリリース本文から、イベント・お店・サービスに関する情報を抽出してください。
+    prompt = f"""以下のプレスリリース本文から情報を抽出してください。
 情報がない項目は空文字にしてください。
 必ずJSON形式のみで返してください。
 
 {{
   "event_date": "開催日時（複数ある場合は改行区切りで全て）",
   "venue": "場所・会場名",
-  "address": "住所",
-  "fee": "参加費・料金",
-  "note": "予約方法・その他特記事項"
+  "address": "住所（都道府県から番地まで）",
+  "fee": "参加費・料金・入場料",
+  "note": "予約方法・その他特記事項",
+  "info": "店舗情報・会場情報・イベント概要などのまとまった基本情報をそのまま全文コピー（店名、所在地、営業時間、席数、設備等などが含まれるブロック）",
+  "official": "公式サイトURL・SNSアカウント・予約サイトなどのリンク情報をそのまま全文コピー"
 }}
 
 本文:
@@ -241,6 +245,8 @@ def ai_extract_info(client, body_text: str) -> Dict:
                 "address":    result.get("address", ""),
                 "fee":        result.get("fee", ""),
                 "note":       result.get("note", ""),
+                "info":       result.get("info", ""),
+                "official":   result.get("official", ""),
             }
         except Exception as e:
             err_str = str(e)
@@ -251,13 +257,13 @@ def ai_extract_info(client, body_text: str) -> Dict:
             else:
                 print(f"  Gemini抽出エラー: {e}")
                 break
-    return {"event_date": "", "venue": "", "address": "", "fee": "", "note": ""}
+    return empty
 
 # ============================================================
 # メイン処理
 # ============================================================
 def main():
-    print("=== batch.py v5 (Gemini情報抽出対応版) ===")
+    print("=== batch.py v6 (info/official追加版) ===")
 
     api_key = os.environ.get("GOOGLE_API_KEY")
     if not api_key:
@@ -296,6 +302,8 @@ def main():
                 "address":    extracted["address"],
                 "fee":        extracted["fee"],
                 "note":       extracted["note"],
+                "info":       extracted["info"],
+                "official":   extracted["official"],
                 "crawled_at": crawled_at,
             }
             append_to_csv(data, OUTPUT_CSV)
